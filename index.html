@@ -1,0 +1,1287 @@
+<!DOCTYPE html>
+<html>
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
+<meta name="apple-mobile-web-app-capable" content="yes">
+<meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
+<title>Tree Crew Boss</title>
+<style>
+*{margin:0;padding:0;box-sizing:border-box;}
+html,body{width:100%;height:100%;overflow:hidden;background:#000;touch-action:none;-webkit-touch-callout:none;-webkit-user-select:none;user-select:none;}
+canvas{display:block;position:absolute;top:50%;left:50%;transform:translate(-50%,-50%);}
+#rotate-msg{display:none;position:fixed;top:0;left:0;width:100%;height:100%;background:#1a0a20;color:#fff;font-family:sans-serif;font-size:28px;font-weight:bold;z-index:999;justify-content:center;align-items:center;text-align:center;flex-direction:column;gap:20px;}
+@media(orientation:portrait){#rotate-msg{display:flex !important;}canvas{display:none !important;}}
+</style>
+</head>
+<body>
+<div id="rotate-msg">📱 Please rotate your device!<br><span style="font-size:18px;opacity:0.7;">Tree Crew Boss works best in landscape</span></div>
+<canvas id="game"></canvas>
+<script>
+'use strict';
+// ─── CANVAS SETUP ─────────────────────────────────────────────
+const canvas = document.getElementById('game');
+const ctx = canvas.getContext('2d');
+const BASE_W = 1024, BASE_H = 768;
+let scale = 1, offsetX = 0, offsetY = 0;
+
+function resize() {
+    const w = window.innerWidth, h = window.innerHeight;
+    scale = Math.min(w / BASE_W, h / BASE_H);
+    canvas.width = BASE_W * scale;
+    canvas.height = BASE_H * scale;
+    canvas.style.width = canvas.width + 'px';
+    canvas.style.height = canvas.height + 'px';
+    offsetX = 0; offsetY = 0;
+}
+window.addEventListener('resize', resize);
+resize();
+
+function toGame(tx, ty) {
+    const r = canvas.getBoundingClientRect();
+    return { x: (tx - r.left) / scale, y: (ty - r.top) / scale };
+}
+
+// ─── AUDIO ────────────────────────────────────────────────────
+let audioCtx = null;
+function initAudio() {
+    if (!audioCtx) audioCtx = new (window.AudioContext || window.webkitAudioContext)();
+    if (audioCtx.state === 'suspended') audioCtx.resume();
+}
+
+function playSound(type) {
+    if (!audioCtx) return;
+    const now = audioCtx.currentTime;
+    const g = audioCtx.createGain();
+    g.connect(audioCtx.destination);
+    if (type === 'chop') {
+        const buf = audioCtx.createBuffer(1, audioCtx.sampleRate * 0.08, audioCtx.sampleRate);
+        const d = buf.getChannelData(0);
+        for (let i = 0; i < d.length; i++) d[i] = (Math.random() * 2 - 1) * (1 - i / d.length);
+        const s = audioCtx.createBufferSource(); s.buffer = buf; s.connect(g);
+        g.gain.setValueAtTime(0.3, now); g.gain.exponentialRampToValueAtTime(0.001, now + 0.08);
+        s.start(now);
+    } else if (type === 'coin') {
+        const o = audioCtx.createOscillator(); o.type = 'sine'; o.frequency.setValueAtTime(880, now);
+        o.frequency.exponentialRampToValueAtTime(1760, now + 0.1); o.connect(g);
+        g.gain.setValueAtTime(0.2, now); g.gain.exponentialRampToValueAtTime(0.001, now + 0.15);
+        o.start(now); o.stop(now + 0.15);
+    } else if (type === 'honk') {
+        const o = audioCtx.createOscillator(); o.type = 'square'; o.frequency.setValueAtTime(220, now); o.connect(g);
+        g.gain.setValueAtTime(0.15, now); g.gain.exponentialRampToValueAtTime(0.001, now + 0.2);
+        o.start(now); o.stop(now + 0.2);
+    } else if (type === 'success') {
+        [523, 659, 784].forEach((f, i) => {
+            const o = audioCtx.createOscillator(); o.type = 'sine'; o.frequency.value = f;
+            const gg = audioCtx.createGain(); gg.connect(audioCtx.destination);
+            gg.gain.setValueAtTime(0.2, now + i * 0.12); gg.gain.exponentialRampToValueAtTime(0.001, now + i * 0.12 + 0.15);
+            o.connect(gg); o.start(now + i * 0.12); o.stop(now + i * 0.12 + 0.15);
+        });
+    } else if (type === 'fail') {
+        [400, 300].forEach((f, i) => {
+            const o = audioCtx.createOscillator(); o.type = 'sawtooth'; o.frequency.value = f;
+            const gg = audioCtx.createGain(); gg.connect(audioCtx.destination);
+            gg.gain.setValueAtTime(0.12, now + i * 0.2); gg.gain.exponentialRampToValueAtTime(0.001, now + i * 0.2 + 0.25);
+            o.connect(gg); o.start(now + i * 0.2); o.stop(now + i * 0.2 + 0.25);
+        });
+    } else if (type === 'tap') {
+        const o = audioCtx.createOscillator(); o.type = 'sine'; o.frequency.value = 600; o.connect(g);
+        g.gain.setValueAtTime(0.1, now); g.gain.exponentialRampToValueAtTime(0.001, now + 0.05);
+        o.start(now); o.stop(now + 0.05);
+    } else if (type === 'timber') {
+        const o = audioCtx.createOscillator(); o.type = 'sawtooth';
+        o.frequency.setValueAtTime(150, now); o.frequency.exponentialRampToValueAtTime(40, now + 0.6); o.connect(g);
+        g.gain.setValueAtTime(0.25, now); g.gain.exponentialRampToValueAtTime(0.001, now + 0.6);
+        o.start(now); o.stop(now + 0.6);
+    } else if (type === 'chipper') {
+        const o = audioCtx.createOscillator(); o.type = 'sawtooth'; o.frequency.value = 120; o.connect(g);
+        g.gain.setValueAtTime(0.1, now); g.gain.exponentialRampToValueAtTime(0.001, now + 0.3);
+        o.start(now); o.stop(now + 0.3);
+    } else if (type === 'start') {
+        [440, 554, 659, 880].forEach((f, i) => {
+            const o = audioCtx.createOscillator(); o.type = 'square'; o.frequency.value = f;
+            const gg = audioCtx.createGain(); gg.connect(audioCtx.destination);
+            gg.gain.setValueAtTime(0.1, now + i * 0.1); gg.gain.exponentialRampToValueAtTime(0.001, now + i * 0.1 + 0.12);
+            o.connect(gg); o.start(now + i * 0.1); o.stop(now + i * 0.1 + 0.12);
+        });
+    }
+}
+
+// ─── PERSISTENCE ──────────────────────────────────────────────
+let coins = parseInt(localStorage.getItem('tcb_coins') || '0');
+let crewLevel = parseInt(localStorage.getItem('tcb_level') || '1');
+let jobsCompleted = parseInt(localStorage.getItem('tcb_jobs') || '0');
+function save() {
+    localStorage.setItem('tcb_coins', coins);
+    localStorage.setItem('tcb_level', crewLevel);
+    localStorage.setItem('tcb_jobs', jobsCompleted);
+}
+
+// ─── GAME DATA ────────────────────────────────────────────────
+const WORKERS = [
+    { name: 'Chip', personality: 'Eager', bestAt: 'chip', weakness: 'drive', color: '#4CAF50', hatColor: '#388E3C',
+      sayGood: "LET'S GOOO!", sayBad: 'Oops... my bad!', sayIdle: "C'mon c'mon c'mon!" },
+    { name: 'Tree', personality: 'Wise', bestAt: 'shave', weakness: 'rush', color: '#8D6E63', hatColor: '#5D4037',
+      sayGood: 'Oak trees can live 500 years!', sayBad: 'Hmm, this is tricky...', sayIdle: 'Fun fact: trees talk to each other!' },
+    { name: 'Truck', personality: 'Loud', bestAt: 'drive', weakness: 'climb', color: '#F44336', hatColor: '#C62828',
+      sayGood: 'BEEP BEEP COMIN THROUGH!', sayBad: 'Uh... was it a left turn?', sayIdle: '*honk honk*' },
+    { name: 'Tree Chopper', personality: 'Intense', bestAt: 'chop', weakness: 'delicate', color: '#FFC107', hatColor: '#F9A825',
+      sayGood: 'TIMBERRRRR!', sayBad: 'That was NOT supposed to happen!', sayIdle: 'I smell wood to chop...' },
+    { name: 'Ezra Trucky Do', personality: 'Silly', bestAt: 'wild', weakness: 'wild', color: '#9C27B0', hatColor: '#6A1B9A',
+      sayGood: 'Watch THIS!', sayBad: '*does a little dance*', sayIdle: '*dancing*' },
+];
+
+const VEHICLES = [
+    { name: 'The Chopper', desc: 'Heavy felling', color: '#D32F2F', icon: '🪓' },
+    { name: 'Bucket Truck', desc: 'Tall trimming', color: '#1976D2', icon: '🏗' },
+    { name: 'Palm Bucket Truck', desc: 'Tropical work', color: '#00897B', icon: '🌴' },
+    { name: 'Chip Truck', desc: 'Debris cleanup', color: '#689F38', icon: '🌿' },
+    { name: 'Cone Truck', desc: 'Work zone setup', color: '#FF8F00', icon: '🔶' },
+];
+
+const PHASE_TYPES = [
+    { id: 'cones', name: 'Set Up Cones', icon: '🔶', skill: 'drive', weakSkill: 'chop' },
+    { id: 'drive', name: 'Drive to Site', icon: '🚛', skill: 'drive', weakSkill: 'climb' },
+    { id: 'shave', name: 'Shave the Tree', icon: '🪒', skill: 'shave', weakSkill: 'rush' },
+    { id: 'chop', name: 'Chop the Tree', icon: '🪓', skill: 'chop', weakSkill: 'delicate' },
+    { id: 'bucket', name: 'Bucket Work', icon: '🏗', skill: 'climb', weakSkill: 'climb' },
+    { id: 'chip', name: 'Chip & Cleanup', icon: '🌿', skill: 'chip', weakSkill: 'drive' },
+];
+
+const TREE_TYPES = [
+    { name: 'Old Stumpy', type: 'oak', trunkW: 40, trunkH: 120, canopyR: 70, color: '#2E7D32', trunkColor: '#5D4037' },
+    { name: 'The Leaner', type: 'pine', trunkW: 25, trunkH: 160, canopyR: 50, color: '#1B5E20', trunkColor: '#4E342E', lean: 8 },
+    { name: 'Big Bertha', type: 'oak', trunkW: 55, trunkH: 140, canopyR: 90, color: '#388E3C', trunkColor: '#6D4C41' },
+    { name: 'Sir Branch-a-Lot', type: 'oak', trunkW: 35, trunkH: 110, canopyR: 65, color: '#43A047', trunkColor: '#5D4037' },
+    { name: 'Palm Pete', type: 'palm', trunkW: 20, trunkH: 180, canopyR: 55, color: '#66BB6A', trunkColor: '#8D6E63' },
+    { name: 'Tiny Tim', type: 'pine', trunkW: 20, trunkH: 90, canopyR: 35, color: '#2E7D32', trunkColor: '#4E342E' },
+    { name: 'The Widow Maker', type: 'dead', trunkW: 45, trunkH: 130, canopyR: 40, color: '#795548', trunkColor: '#4E342E' },
+    { name: 'Grandpa Oak', type: 'oak', trunkW: 60, trunkH: 150, canopyR: 100, color: '#1B5E20', trunkColor: '#3E2723' },
+    { name: 'Buzz Cut Bob', type: 'pine', trunkW: 30, trunkH: 130, canopyR: 45, color: '#388E3C', trunkColor: '#5D4037' },
+    { name: 'Ol\' Coconut', type: 'palm', trunkW: 18, trunkH: 170, canopyR: 50, color: '#4CAF50', trunkColor: '#A1887F' },
+];
+
+const JOB_TEMPLATES = [
+    { difficulty: 1, phases: ['cones', 'drive', 'chop'], bonusText: 'Finish under 2 min!', bonusCond: 'fast' },
+    { difficulty: 1, phases: ['cones', 'drive', 'shave', 'chop'], bonusText: 'No fails!', bonusCond: 'perfect' },
+    { difficulty: 1, phases: ['drive', 'shave', 'chip'], bonusText: 'Finish under 2 min!', bonusCond: 'fast' },
+    { difficulty: 2, phases: ['cones', 'drive', 'bucket', 'chop'], bonusText: 'No fails!', bonusCond: 'perfect' },
+    { difficulty: 2, phases: ['cones', 'drive', 'shave', 'chop', 'chip'], bonusText: 'All 5 workers used!', bonusCond: 'allworkers' },
+    { difficulty: 2, phases: ['drive', 'bucket', 'shave', 'chop'], bonusText: 'Finish under 2 min!', bonusCond: 'fast' },
+    { difficulty: 3, phases: ['cones', 'drive', 'bucket', 'shave', 'chop', 'chip'], bonusText: 'No fails!', bonusCond: 'perfect' },
+    { difficulty: 3, phases: ['cones', 'drive', 'shave', 'chop', 'chip'], bonusText: 'Under 90 sec!', bonusCond: 'fast' },
+];
+
+// ─── WEATHER ──────────────────────────────────────────────────
+const WEATHERS = [
+    { name: 'Sunny', icon: '☀️', modifier: 0.05, color: '#87CEEB' },
+    { name: 'Cloudy', icon: '☁️', modifier: 0, color: '#9E9E9E' },
+    { name: 'Rainy', icon: '🌧', modifier: -0.1, color: '#607D8B' },
+];
+
+// ─── GAME STATE ───────────────────────────────────────────────
+let state = 'MENU'; // MENU, JOB_BOARD, PLANNING, RUNNING, RESULTS
+let currentJob = null;
+let selectedWorker = null;
+let assignments = []; // workerIndex per phase
+let selectedVehicle = 0;
+let timeLimit = 3; // 1-5 game minutes
+let runPhaseIdx = 0;
+let runTimer = 0;
+let runPhaseTimer = 0;
+let runPhaseState = 'enter'; // enter, work, result
+let phaseResults = [];
+let runAnimFrame = 0;
+let earnedCoins = 0;
+let earnedStars = 0;
+let bonusEarned = false;
+let weather = WEATHERS[0];
+let screenShake = 0;
+let particles = [];
+let speechBubble = null;
+let speechTimer = 0;
+let floatingTexts = [];
+let menuBounce = 0;
+let tapFeedbacks = [];
+let t = 0; // global time
+
+// ─── HELPERS ──────────────────────────────────────────────────
+function rand(a, b) { return Math.random() * (b - a) + a; }
+function randInt(a, b) { return Math.floor(rand(a, b + 1)); }
+function pick(arr) { return arr[Math.floor(Math.random() * arr.length)]; }
+function clamp(v, lo, hi) { return Math.max(lo, Math.min(hi, v)); }
+function lerp(a, b, t) { return a + (b - a) * t; }
+function easeOut(t) { return 1 - (1 - t) * (1 - t); }
+function easeInOut(t) { return t < 0.5 ? 2 * t * t : 1 - Math.pow(-2 * t + 2, 2) / 2; }
+
+function hitBox(px, py, x, y, w, h) {
+    return px >= x && px <= x + w && py >= y && py <= y + h;
+}
+
+// ─── DRAWING HELPERS ──────────────────────────────────────────
+function drawPixelRect(x, y, w, h, color) {
+    ctx.fillStyle = color;
+    ctx.fillRect(Math.round(x), Math.round(y), Math.round(w), Math.round(h));
+}
+
+function drawText(text, x, y, size, color, align, stroke) {
+    ctx.font = `bold ${size}px sans-serif`;
+    ctx.textAlign = align || 'center';
+    ctx.textBaseline = 'middle';
+    if (stroke) {
+        ctx.strokeStyle = '#000';
+        ctx.lineWidth = size > 20 ? 4 : 2;
+        ctx.lineJoin = 'round';
+        ctx.strokeText(text, x, y);
+    }
+    ctx.fillStyle = color || '#fff';
+    ctx.fillText(text, x, y);
+}
+
+function drawButton(x, y, w, h, text, color, textColor, hovered) {
+    const r = 8;
+    ctx.fillStyle = hovered ? lighten(color) : color;
+    ctx.beginPath();
+    ctx.roundRect(x, y, w, h, r);
+    ctx.fill();
+    // Shadow
+    ctx.fillStyle = 'rgba(0,0,0,0.2)';
+    ctx.beginPath();
+    ctx.roundRect(x, y + h - 6, w, 6, [0, 0, r, r]);
+    ctx.fill();
+    drawText(text, x + w / 2, y + h / 2 - 1, Math.min(22, h * 0.4), textColor || '#fff', 'center', true);
+}
+
+function lighten(hex) {
+    const r = parseInt(hex.slice(1, 3), 16), g = parseInt(hex.slice(3, 5), 16), b = parseInt(hex.slice(5, 7), 16);
+    return `rgb(${Math.min(255, r + 40)},${Math.min(255, g + 40)},${Math.min(255, b + 40)})`;
+}
+
+function drawWorker(x, y, workerIdx, size, selected, bounce, emotion) {
+    const w = WORKERS[workerIdx];
+    const s = size || 1;
+    const bOff = bounce ? Math.sin(t * 4 + workerIdx) * 3 * s : 0;
+    const by = y + bOff;
+    // Selected glow
+    if (selected) {
+        ctx.fillStyle = 'rgba(255,255,100,0.3)';
+        ctx.beginPath();
+        ctx.arc(x, by + 5 * s, 25 * s, 0, Math.PI * 2);
+        ctx.fill();
+    }
+    // Body
+    drawPixelRect(x - 8 * s, by - 5 * s, 16 * s, 22 * s, w.color);
+    // Legs
+    drawPixelRect(x - 7 * s, by + 17 * s, 5 * s, 10 * s, '#5D4037');
+    drawPixelRect(x + 2 * s, by + 17 * s, 5 * s, 10 * s, '#5D4037');
+    // Arms
+    const armWave = selected ? Math.sin(t * 8) * 15 : 0;
+    ctx.save();
+    ctx.translate(x - 9 * s, by);
+    ctx.rotate((-20 + armWave) * Math.PI / 180);
+    drawPixelRect(-3 * s, 0, 4 * s, 14 * s, '#FFCC80');
+    ctx.restore();
+    ctx.save();
+    ctx.translate(x + 9 * s, by);
+    ctx.rotate((20 - armWave) * Math.PI / 180);
+    drawPixelRect(-1 * s, 0, 4 * s, 14 * s, '#FFCC80');
+    ctx.restore();
+    // Head
+    drawPixelRect(x - 9 * s, by - 22 * s, 18 * s, 18 * s, '#FFCC80');
+    // Hard hat
+    drawPixelRect(x - 11 * s, by - 27 * s, 22 * s, 8 * s, w.hatColor);
+    drawPixelRect(x - 13 * s, by - 20 * s, 26 * s, 3 * s, w.hatColor);
+    // Eyes
+    const eyeY = by - 16 * s;
+    if (emotion === 'nervous') {
+        // Worried eyes
+        drawPixelRect(x - 5 * s, eyeY - 1 * s, 3 * s, 4 * s, '#000');
+        drawPixelRect(x + 2 * s, eyeY - 1 * s, 3 * s, 4 * s, '#000');
+        // Worried mouth
+        ctx.strokeStyle = '#000';
+        ctx.lineWidth = 1.5 * s;
+        ctx.beginPath();
+        ctx.arc(x, by - 7 * s, 4 * s, 0.1 * Math.PI, 0.9 * Math.PI, true);
+        ctx.stroke();
+    } else if (emotion === 'happy') {
+        // Happy eyes (closed arcs)
+        ctx.strokeStyle = '#000';
+        ctx.lineWidth = 1.5 * s;
+        ctx.beginPath(); ctx.arc(x - 4 * s, eyeY, 2 * s, Math.PI, 0); ctx.stroke();
+        ctx.beginPath(); ctx.arc(x + 4 * s, eyeY, 2 * s, Math.PI, 0); ctx.stroke();
+        // Smile
+        ctx.beginPath();
+        ctx.arc(x, by - 9 * s, 4 * s, 0.1 * Math.PI, 0.9 * Math.PI);
+        ctx.stroke();
+    } else {
+        // Normal eyes
+        drawPixelRect(x - 5 * s, eyeY, 3 * s, 3 * s, '#000');
+        drawPixelRect(x + 2 * s, eyeY, 3 * s, 3 * s, '#000');
+        // Mouth
+        drawPixelRect(x - 2 * s, by - 9 * s, 5 * s, 2 * s, '#000');
+    }
+}
+
+function drawTree(x, y, tree, fallAngle, shaveProgress) {
+    const { trunkW, trunkH, canopyR, color, trunkColor, type, lean } = tree;
+    ctx.save();
+    ctx.translate(x, y);
+    if (fallAngle) ctx.rotate(fallAngle * Math.PI / 180);
+    if (lean) ctx.translate(lean, 0);
+    // Trunk
+    drawPixelRect(-trunkW / 2, -trunkH, trunkW, trunkH, trunkColor);
+    // Shave marks
+    if (shaveProgress > 0) {
+        for (let i = 0; i < Math.floor(shaveProgress * 5); i++) {
+            drawPixelRect(-trunkW / 2 - 2, -trunkH + 20 + i * 18, trunkW + 4, 3, '#D7CCC8');
+        }
+    }
+    // Canopy
+    if (type === 'palm') {
+        // Palm fronds
+        for (let i = 0; i < 7; i++) {
+            ctx.save();
+            ctx.translate(0, -trunkH);
+            ctx.rotate((i * 51 + Math.sin(t * 2 + i) * 5) * Math.PI / 180);
+            drawPixelRect(-4, 0, 8, -canopyR, color);
+            drawPixelRect(-10, -canopyR, 20, 8, color);
+            ctx.restore();
+        }
+    } else if (type === 'pine') {
+        // Triangle layers
+        for (let i = 0; i < 3; i++) {
+            const ly = -trunkH + 10 - i * (canopyR * 0.6);
+            const lw = canopyR * (1.3 - i * 0.3);
+            ctx.fillStyle = i % 2 === 0 ? color : lighten(color);
+            ctx.beginPath();
+            ctx.moveTo(0, ly - canopyR * 0.5);
+            ctx.lineTo(-lw / 2, ly + 8);
+            ctx.lineTo(lw / 2, ly + 8);
+            ctx.closePath();
+            ctx.fill();
+        }
+    } else if (type === 'dead') {
+        // Bare branches
+        ctx.strokeStyle = trunkColor;
+        ctx.lineWidth = 4;
+        for (let i = 0; i < 4; i++) {
+            ctx.beginPath();
+            const by = -trunkH + 15 + i * 25;
+            ctx.moveTo(0, by);
+            const dir = i % 2 === 0 ? 1 : -1;
+            ctx.lineTo(dir * (25 + i * 8), by - 20 - i * 5);
+            ctx.stroke();
+        }
+    } else {
+        // Round canopy (oak-like) using blocky squares
+        const cx = 0, cy = -trunkH - canopyR * 0.3;
+        const blockSize = 12;
+        for (let bx = -canopyR; bx < canopyR; bx += blockSize) {
+            for (let by = -canopyR; by < canopyR; by += blockSize) {
+                const dist = Math.sqrt(bx * bx + by * by);
+                if (dist < canopyR) {
+                    const shade = (Math.floor(bx / blockSize) + Math.floor(by / blockSize)) % 3 === 0;
+                    ctx.fillStyle = shade ? lighten(color) : color;
+                    ctx.fillRect(cx + bx, cy + by, blockSize - 1, blockSize - 1);
+                }
+            }
+        }
+    }
+    ctx.restore();
+}
+
+function drawVehicle(x, y, vehicleIdx, flip) {
+    const v = VEHICLES[vehicleIdx];
+    ctx.save();
+    ctx.translate(x, y);
+    if (flip) ctx.scale(-1, 1);
+    // Base truck body
+    drawPixelRect(-35, -25, 70, 20, v.color);
+    // Cab
+    drawPixelRect(-35, -40, 25, 18, v.color);
+    drawPixelRect(-32, -38, 10, 10, '#B3E5FC'); // window
+    // Wheels
+    drawPixelRect(-28, -5, 14, 14, '#333');
+    drawPixelRect(14, -5, 14, 14, '#333');
+    drawPixelRect(-26, -3, 10, 10, '#666');
+    drawPixelRect(16, -3, 10, 10, '#666');
+    // Specific features
+    if (vehicleIdx === 0) { // Chopper - saw blade
+        ctx.fillStyle = '#aaa';
+        ctx.beginPath(); ctx.arc(20, -30, 12, 0, Math.PI * 2); ctx.fill();
+        ctx.fillStyle = '#666';
+        ctx.beginPath(); ctx.arc(20, -30, 4, 0, Math.PI * 2); ctx.fill();
+    } else if (vehicleIdx === 1 || vehicleIdx === 2) { // Bucket trucks
+        ctx.strokeStyle = '#FFD600';
+        ctx.lineWidth = 4;
+        ctx.beginPath(); ctx.moveTo(10, -25); ctx.lineTo(15, -55); ctx.lineTo(25, -60); ctx.stroke();
+        drawPixelRect(20, -70, 15, 12, '#FFD600'); // bucket
+    } else if (vehicleIdx === 3) { // Chip truck - open bed
+        drawPixelRect(-5, -30, 40, 8, '#795548');
+        drawPixelRect(30, -40, 5, 18, '#795548');
+    } else if (vehicleIdx === 4) { // Cone truck - cones in bed
+        for (let i = 0; i < 3; i++) {
+            drawPixelRect(i * 12, -35, 8, 12, '#FF6D00');
+            drawPixelRect(i * 12 - 1, -36, 10, 3, '#FF6D00');
+        }
+    }
+    ctx.restore();
+}
+
+function drawSky() {
+    const grad = ctx.createLinearGradient(0, 0, 0, BASE_H * 0.65);
+    if (weather.name === 'Rainy') {
+        grad.addColorStop(0, '#546E7A');
+        grad.addColorStop(1, '#78909C');
+    } else if (weather.name === 'Cloudy') {
+        grad.addColorStop(0, '#90A4AE');
+        grad.addColorStop(1, '#B0BEC5');
+    } else {
+        grad.addColorStop(0, '#4FC3F7');
+        grad.addColorStop(1, '#81D4FA');
+    }
+    ctx.fillStyle = grad;
+    ctx.fillRect(0, 0, BASE_W, BASE_H * 0.65);
+    // Clouds
+    ctx.fillStyle = 'rgba(255,255,255,0.7)';
+    const cloudY1 = 50 + Math.sin(t * 0.3) * 5;
+    for (let cx of [120, 350, 600, 850]) {
+        const cy = cloudY1 + Math.sin(t * 0.2 + cx) * 8;
+        drawPixelRect(cx, cy, 60, 20, 'rgba(255,255,255,0.8)');
+        drawPixelRect(cx + 10, cy - 12, 40, 16, 'rgba(255,255,255,0.8)');
+        drawPixelRect(cx + 20, cy - 20, 20, 12, 'rgba(255,255,255,0.7)');
+    }
+    // Rain
+    if (weather.name === 'Rainy') {
+        ctx.fillStyle = 'rgba(100,150,200,0.4)';
+        for (let i = 0; i < 50; i++) {
+            const rx = (i * 73 + t * 200) % BASE_W;
+            const ry = (i * 47 + t * 400) % (BASE_H * 0.65);
+            ctx.fillRect(rx, ry, 2, 8);
+        }
+    }
+}
+
+function drawGround() {
+    // Grass
+    drawPixelRect(0, BASE_H * 0.65, BASE_W, BASE_H * 0.1, '#4CAF50');
+    // Dirt
+    drawPixelRect(0, BASE_H * 0.75, BASE_W, BASE_H * 0.05, '#795548');
+    // Road
+    drawPixelRect(0, BASE_H * 0.8, BASE_W, BASE_H * 0.08, '#424242');
+    drawPixelRect(0, BASE_H * 0.835, BASE_W, 4, '#FFD600');
+    // More grass below road
+    drawPixelRect(0, BASE_H * 0.88, BASE_W, BASE_H * 0.12, '#388E3C');
+    // Pixel grass detail
+    for (let i = 0; i < 30; i++) {
+        const gx = i * 35;
+        ctx.fillStyle = i % 3 === 0 ? '#66BB6A' : '#43A047';
+        ctx.fillRect(gx, BASE_H * 0.65, 6, 4 + (i % 4));
+    }
+}
+
+function drawScene() {
+    drawSky();
+    drawGround();
+}
+
+function drawCoinCounter() {
+    drawPixelRect(BASE_W - 160, 10, 150, 36, 'rgba(0,0,0,0.5)');
+    drawText('$' + coins, BASE_W - 85, 28, 20, '#FFD700', 'center', true);
+    // Stars
+    drawPixelRect(10, 10, 120, 36, 'rgba(0,0,0,0.5)');
+    let starStr = '';
+    for (let i = 0; i < 5; i++) starStr += i < crewLevel ? '★' : '☆';
+    drawText(starStr, 70, 28, 18, '#FFD700', 'center', true);
+}
+
+function drawParticles() {
+    for (let i = particles.length - 1; i >= 0; i--) {
+        const p = particles[i];
+        p.x += p.vx;
+        p.y += p.vy;
+        p.vy += 0.15;
+        p.life--;
+        if (p.life <= 0) { particles.splice(i, 1); continue; }
+        const alpha = p.life / p.maxLife;
+        ctx.globalAlpha = alpha;
+        ctx.fillStyle = p.color;
+        ctx.fillRect(p.x, p.y, p.size, p.size);
+        ctx.globalAlpha = 1;
+    }
+}
+
+function spawnParticles(x, y, color, count, spread) {
+    for (let i = 0; i < count; i++) {
+        particles.push({
+            x, y, vx: rand(-spread, spread), vy: rand(-spread * 1.5, -1),
+            size: rand(3, 7), color, life: rand(20, 50), maxLife: 50
+        });
+    }
+}
+
+function drawFloatingTexts() {
+    for (let i = floatingTexts.length - 1; i >= 0; i--) {
+        const ft = floatingTexts[i];
+        ft.y -= 1;
+        ft.life--;
+        if (ft.life <= 0) { floatingTexts.splice(i, 1); continue; }
+        ctx.globalAlpha = ft.life / ft.maxLife;
+        drawText(ft.text, ft.x, ft.y, ft.size || 22, ft.color || '#FFD700', 'center', true);
+        ctx.globalAlpha = 1;
+    }
+}
+
+function drawSpeechBubble() {
+    if (!speechBubble || speechTimer <= 0) return;
+    const { x, y, text } = speechBubble;
+    const alpha = Math.min(1, speechTimer / 10);
+    ctx.globalAlpha = alpha;
+    const tw = ctx.measureText(text).width || text.length * 10;
+    const bw = Math.min(250, tw + 30);
+    const bh = 36;
+    const bx = x - bw / 2, by = y - bh - 10;
+    ctx.fillStyle = '#fff';
+    ctx.beginPath();
+    ctx.roundRect(bx, by, bw, bh, 8);
+    ctx.fill();
+    ctx.strokeStyle = '#333';
+    ctx.lineWidth = 2;
+    ctx.stroke();
+    // Triangle
+    ctx.fillStyle = '#fff';
+    ctx.beginPath();
+    ctx.moveTo(x - 6, by + bh);
+    ctx.lineTo(x, by + bh + 8);
+    ctx.lineTo(x + 6, by + bh);
+    ctx.closePath();
+    ctx.fill();
+    ctx.stroke();
+    drawText(text, x, by + bh / 2, 13, '#333', 'center', false);
+    ctx.globalAlpha = 1;
+}
+
+function showSpeech(x, y, text, dur) {
+    speechBubble = { x, y, text };
+    speechTimer = dur || 120;
+}
+
+// ─── GENERATE JOB ─────────────────────────────────────────────
+function generateJob() {
+    const template = pick(JOB_TEMPLATES.filter(j => j.difficulty <= Math.min(3, Math.ceil(crewLevel / 2) + 1)));
+    const tree = pick(TREE_TYPES);
+    // Weather (after level 3)
+    if (crewLevel >= 3) {
+        weather = pick(WEATHERS);
+    } else {
+        weather = WEATHERS[0];
+    }
+    return {
+        tree: { ...tree },
+        difficulty: template.difficulty,
+        phases: template.phases.map(id => ({ ...PHASE_TYPES.find(p => p.id === id) })),
+        bonusText: template.bonusText,
+        bonusCond: template.bonusCond,
+        basePay: template.difficulty * 50 + template.phases.length * 20,
+    };
+}
+
+// ─── STATE: MENU ──────────────────────────────────────────────
+function drawMenu() {
+    // Background
+    drawScene();
+    // Title banner
+    drawPixelRect(0, 0, BASE_W, BASE_H, 'rgba(0,0,0,0.4)');
+    // Title
+    const titleY = 150 + Math.sin(t * 2) * 8;
+    drawText('🪓 TREE CREW BOSS 🪓', BASE_W / 2, titleY, 48, '#FFD700', 'center', true);
+    drawText('You\'re the boss!', BASE_W / 2, titleY + 50, 24, '#fff', 'center', true);
+    // Workers parade
+    for (let i = 0; i < 5; i++) {
+        const wx = 200 + i * 140;
+        const wy = BASE_H * 0.6;
+        drawWorker(wx, wy, i, 1.5, false, true, 'happy');
+        drawText(WORKERS[i].name, wx, wy + 55, 14, '#fff', 'center', true);
+    }
+    // Play button
+    drawButton(BASE_W / 2 - 120, BASE_H - 160, 240, 60, 'START GAME', '#4CAF50', '#fff');
+    // Stats
+    if (coins > 0 || crewLevel > 1) {
+        drawText(`Coins: $${coins}  |  Level: ${crewLevel}`, BASE_W / 2, BASE_H - 80, 16, '#aaa', 'center', false);
+    }
+}
+
+function handleMenuTap(gx, gy) {
+    if (hitBox(gx, gy, BASE_W / 2 - 120, BASE_H - 160, 240, 60)) {
+        playSound('start');
+        state = 'JOB_BOARD';
+        currentJob = generateJob();
+    }
+}
+
+// ─── STATE: JOB BOARD ─────────────────────────────────────────
+function drawJobBoard() {
+    drawScene();
+    // Darken
+    drawPixelRect(0, 0, BASE_W, BASE_H, 'rgba(0,0,0,0.5)');
+    // Clipboard
+    drawPixelRect(200, 60, BASE_W - 400, BASE_H - 180, '#D7CCC8');
+    drawPixelRect(210, 70, BASE_W - 420, BASE_H - 200, '#EFEBE9');
+    // Clip
+    drawPixelRect(BASE_W / 2 - 30, 50, 60, 25, '#9E9E9E');
+    drawText('NEW JOB', BASE_W / 2, 105, 28, '#5D4037', 'center', true);
+    const job = currentJob;
+    // Tree preview
+    drawTree(BASE_W / 2, 310, job.tree, 0, 0);
+    // Tree name
+    drawText(job.tree.name, BASE_W / 2, 180, 30, '#333', 'center', true);
+    // Difficulty stars
+    let stars = '';
+    for (let i = 0; i < 3; i++) stars += i < job.difficulty ? '★' : '☆';
+    drawText('Difficulty: ' + stars, BASE_W / 2, 215, 20, '#F57F17', 'center', false);
+    // Phases count
+    drawText(job.phases.length + ' tasks to complete', BASE_W / 2, 245, 18, '#666', 'center', false);
+    // Bonus
+    drawText('Bonus: ' + job.bonusText, BASE_W / 2, 410, 16, '#2E7D32', 'center', false);
+    // Pay
+    drawText('Base Pay: $' + job.basePay, BASE_W / 2, 440, 18, '#1565C0', 'center', false);
+    // Weather
+    drawText(`Weather: ${weather.icon} ${weather.name}`, BASE_W / 2, 470, 16, '#555', 'center', false);
+    // Take job button
+    drawButton(BASE_W / 2 - 140, BASE_H - 100, 280, 55, 'TAKE THIS JOB!', '#4CAF50', '#fff');
+    // Coin counter
+    drawCoinCounter();
+    // Workers at bottom
+    for (let i = 0; i < 5; i++) {
+        drawWorker(100 + i * 60, BASE_H - 30, i, 0.7, false, true);
+    }
+}
+
+function handleJobBoardTap(gx, gy) {
+    if (hitBox(gx, gy, BASE_W / 2 - 140, BASE_H - 100, 280, 55)) {
+        playSound('tap');
+        state = 'PLANNING';
+        selectedWorker = null;
+        assignments = new Array(currentJob.phases.length).fill(-1);
+        selectedVehicle = 0;
+        timeLimit = 3;
+    }
+}
+
+// ─── STATE: PLANNING ──────────────────────────────────────────
+function drawPlanning() {
+    drawScene();
+    drawPixelRect(0, 0, BASE_W, BASE_H, 'rgba(0,0,0,0.6)');
+    drawText('PLAN THE JOB: ' + currentJob.tree.name, BASE_W / 2, 35, 24, '#FFD700', 'center', true);
+    // Weather
+    drawText(`${weather.icon} ${weather.name}`, BASE_W - 80, 35, 16, '#fff', 'center', false);
+    // Phase list (left side)
+    const phases = currentJob.phases;
+    const phaseStartY = 70;
+    const phaseH = Math.min(80, (BASE_H - 250) / phases.length);
+    for (let i = 0; i < phases.length; i++) {
+        const py = phaseStartY + i * phaseH;
+        const assigned = assignments[i] >= 0;
+        const isTarget = selectedWorker !== null && assignments[i] < 0;
+        // Phase slot
+        drawPixelRect(30, py, 440, phaseH - 8, isTarget ? 'rgba(255,255,100,0.3)' : 'rgba(255,255,255,0.15)');
+        ctx.strokeStyle = assigned ? '#4CAF50' : (isTarget ? '#FFD700' : '#666');
+        ctx.lineWidth = 2;
+        ctx.strokeRect(30, py, 440, phaseH - 8);
+        // Phase info
+        drawText(`${i + 1}. ${phases[i].icon} ${phases[i].name}`, 55, py + phaseH / 2 - 4, 18, '#fff', 'left', false);
+        // Assigned worker
+        if (assigned) {
+            const aw = WORKERS[assignments[i]];
+            drawWorker(420, py + phaseH / 2 + 5, assignments[i], 0.6, false, false, getMatchEmotion(assignments[i], phases[i]));
+            drawText(aw.name, 370, py + phaseH / 2 - 4, 12, aw.color, 'center', false);
+        }
+        // Match indicator when a worker is selected
+        if (selectedWorker !== null && !assigned) {
+            const match = getMatchLevel(selectedWorker, phases[i]);
+            if (match === 'good') {
+                drawText('👍', 460, py + phaseH / 2 - 4, 22, '#4CAF50', 'center', false);
+            } else if (match === 'bad') {
+                drawText('⚠️', 460, py + phaseH / 2 - 4, 22, '#FF9800', 'center', false);
+            }
+        }
+    }
+    // Workers (right side)
+    drawText('YOUR CREW', 700, 65, 18, '#fff', 'center', true);
+    for (let i = 0; i < 5; i++) {
+        const wx = 700;
+        const wy = 120 + i * 80;
+        const isAssigned = assignments.includes(i);
+        const isSel = selectedWorker === i;
+        if (isAssigned) {
+            ctx.globalAlpha = 0.3;
+        }
+        drawPixelRect(580, wy - 30, 240, 70, isSel ? 'rgba(255,255,100,0.2)' : 'rgba(255,255,255,0.08)');
+        if (isSel) {
+            ctx.strokeStyle = '#FFD700';
+            ctx.lineWidth = 2;
+            ctx.strokeRect(580, wy - 30, 240, 70);
+        }
+        drawWorker(620, wy + 10, i, 0.8, isSel, isSel);
+        drawText(WORKERS[i].name, 720, wy - 8, 16, WORKERS[i].color, 'left', true);
+        drawText(getSkillLabel(i), 720, wy + 12, 12, '#aaa', 'left', false);
+        if (isAssigned) {
+            drawText('ASSIGNED', 720, wy + 30, 11, '#4CAF50', 'left', false);
+        }
+        ctx.globalAlpha = 1;
+    }
+    // Vehicle selector
+    const vy = BASE_H - 110;
+    drawText('Vehicle:', 55, vy, 16, '#fff', 'left', false);
+    drawVehicle(180, vy + 10, selectedVehicle, false);
+    drawText(VEHICLES[selectedVehicle].name, 280, vy - 5, 15, '#fff', 'left', true);
+    drawText(VEHICLES[selectedVehicle].desc, 280, vy + 15, 12, '#aaa', 'left', false);
+    // Vehicle arrows
+    drawButton(50, vy + 15, 35, 30, '<', '#555');
+    drawButton(130, vy + 15, 35, 30, '>', '#555');
+    // Time slider
+    const ty = BASE_H - 55;
+    drawText('Time: ', 55, ty, 16, '#fff', 'left', false);
+    for (let i = 1; i <= 5; i++) {
+        const tx = 120 + (i - 1) * 50;
+        drawPixelRect(tx, ty - 14, 40, 28, i === timeLimit ? '#FF9800' : 'rgba(255,255,255,0.15)');
+        drawText(i + ' min', tx + 20, ty, 12, i === timeLimit ? '#fff' : '#888', 'center', false);
+    }
+    // Time description
+    const timeDesc = timeLimit <= 2 ? 'RUSH (more bonus!)' : timeLimit >= 4 ? 'EASY (less bonus)' : 'NORMAL';
+    drawText(timeDesc, 420, ty, 13, timeLimit <= 2 ? '#FF9800' : '#aaa', 'left', false);
+    // Start button (only if all assigned)
+    const allAssigned = assignments.every(a => a >= 0);
+    if (allAssigned) {
+        drawButton(BASE_W / 2 - 120, BASE_H - 60, 240, 50, 'START JOB!', '#4CAF50');
+    }
+    // Clear button
+    drawButton(BASE_W - 130, BASE_H - 55, 100, 40, 'Clear', '#666');
+    drawCoinCounter();
+}
+
+function getMatchLevel(workerIdx, phase) {
+    const w = WORKERS[workerIdx];
+    if (w.bestAt === 'wild') return 'neutral'; // Ezra
+    if (w.bestAt === phase.skill) return 'good';
+    if (w.weakness === phase.skill || w.weakness === phase.weakSkill) return 'bad';
+    return 'neutral';
+}
+
+function getMatchEmotion(workerIdx, phase) {
+    const m = getMatchLevel(workerIdx, phase);
+    if (m === 'good') return 'happy';
+    if (m === 'bad') return 'nervous';
+    return null;
+}
+
+function getSkillLabel(workerIdx) {
+    const w = WORKERS[workerIdx];
+    const labels = { chop: 'Chopping', shave: 'Shaving', drive: 'Driving', chip: 'Chipping', climb: 'Climbing', wild: 'Wildcard!' };
+    return 'Best: ' + (labels[w.bestAt] || w.bestAt);
+}
+
+function handlePlanningTap(gx, gy) {
+    const phases = currentJob.phases;
+    const phaseH = Math.min(80, (BASE_H - 250) / phases.length);
+    // Tap a worker?
+    for (let i = 0; i < 5; i++) {
+        const wy = 120 + i * 80;
+        if (hitBox(gx, gy, 580, wy - 30, 240, 70)) {
+            if (!assignments.includes(i)) {
+                playSound('tap');
+                selectedWorker = (selectedWorker === i) ? null : i;
+                return;
+            } else {
+                // Unassign
+                const idx = assignments.indexOf(i);
+                if (idx >= 0) {
+                    playSound('tap');
+                    assignments[idx] = -1;
+                    selectedWorker = null;
+                    return;
+                }
+            }
+        }
+    }
+    // Tap a phase slot?
+    if (selectedWorker !== null) {
+        for (let i = 0; i < phases.length; i++) {
+            const py = 70 + i * phaseH;
+            if (hitBox(gx, gy, 30, py, 440, phaseH - 8)) {
+                if (assignments[i] < 0) {
+                    playSound('tap');
+                    assignments[i] = selectedWorker;
+                    selectedWorker = null;
+                    return;
+                } else {
+                    // Tap assigned phase to unassign
+                    playSound('tap');
+                    assignments[i] = -1;
+                    return;
+                }
+            }
+        }
+    } else {
+        // Tap assigned phase to unassign
+        for (let i = 0; i < phases.length; i++) {
+            const py = 70 + i * phaseH;
+            if (hitBox(gx, gy, 30, py, 440, phaseH - 8) && assignments[i] >= 0) {
+                playSound('tap');
+                assignments[i] = -1;
+                return;
+            }
+        }
+    }
+    // Vehicle arrows
+    const vy = BASE_H - 110;
+    if (hitBox(gx, gy, 50, vy + 15, 35, 30)) {
+        playSound('tap');
+        selectedVehicle = (selectedVehicle - 1 + VEHICLES.length) % VEHICLES.length;
+    }
+    if (hitBox(gx, gy, 130, vy + 15, 35, 30)) {
+        playSound('tap');
+        selectedVehicle = (selectedVehicle + 1) % VEHICLES.length;
+    }
+    // Time buttons
+    const ty = BASE_H - 55;
+    for (let i = 1; i <= 5; i++) {
+        const tx = 120 + (i - 1) * 50;
+        if (hitBox(gx, gy, tx, ty - 14, 40, 28)) {
+            playSound('tap');
+            timeLimit = i;
+        }
+    }
+    // Start button
+    const allAssigned = assignments.every(a => a >= 0);
+    if (allAssigned && hitBox(gx, gy, BASE_W / 2 - 120, BASE_H - 60, 240, 50)) {
+        playSound('start');
+        startJob();
+    }
+    // Clear button
+    if (hitBox(gx, gy, BASE_W - 130, BASE_H - 55, 100, 40)) {
+        playSound('tap');
+        assignments.fill(-1);
+        selectedWorker = null;
+    }
+}
+
+// ─── STATE: RUNNING ───────────────────────────────────────────
+let runWorkerX = -50;
+let runWorkerTargetX = 400;
+let runTreeFallAngle = 0;
+let runShaveProgress = 0;
+let runVehicleX = -80;
+let runPhaseSuccess = false;
+let runBucketY = 0;
+let runChipCount = 0;
+let runConePositions = [];
+let runPhaseDuration = 0;
+
+function startJob() {
+    state = 'RUNNING';
+    runPhaseIdx = 0;
+    runTimer = timeLimit * 60 * 60; // frames (at 60fps, timeLimit minutes)
+    phaseResults = [];
+    runAnimFrame = 0;
+    runPhaseState = 'enter';
+    runTreeFallAngle = 0;
+    runShaveProgress = 0;
+    particles = [];
+    floatingTexts = [];
+    screenShake = 0;
+    setupPhaseAnimation();
+}
+
+function setupPhaseAnimation() {
+    runWorkerX = -50;
+    runWorkerTargetX = 350;
+    runAnimFrame = 0;
+    runPhaseState = 'enter';
+    runBucketY = 0;
+    runChipCount = 0;
+    runConePositions = [];
+    runVehicleX = -80;
+    runPhaseDuration = 180; // 3 seconds per phase
+    // Determine success
+    const phase = currentJob.phases[runPhaseIdx];
+    const workerIdx = assignments[runPhaseIdx];
+    const w = WORKERS[workerIdx];
+    let chance = 0.6; // base
+    const matchLevel = getMatchLevel(workerIdx, phase);
+    if (matchLevel === 'good') chance = 0.85;
+    else if (matchLevel === 'bad') chance = 0.35;
+    if (w.bestAt === 'wild') chance = 0.5; // Ezra always 50/50
+    // Time pressure
+    const timeRatio = runTimer / (timeLimit * 60 * 60);
+    if (timeRatio < 0.5) chance -= 0.15;
+    // Weather
+    chance += weather.modifier;
+    runPhaseSuccess = Math.random() < clamp(chance, 0.1, 0.95);
+}
+
+function drawRunning() {
+    // Screen shake
+    if (screenShake > 0) {
+        ctx.save();
+        ctx.translate(rand(-screenShake, screenShake), rand(-screenShake, screenShake));
+        screenShake *= 0.9;
+        if (screenShake < 0.5) screenShake = 0;
+    }
+    drawScene();
+    // Tree
+    const treeX = 650, treeY = BASE_H * 0.65;
+    drawTree(treeX, treeY, currentJob.tree, runTreeFallAngle, runShaveProgress);
+    const phase = currentJob.phases[runPhaseIdx];
+    const workerIdx = assignments[runPhaseIdx];
+    // Vehicle
+    if (phase.id === 'drive' || phase.id === 'cones') {
+        const vIdx = phase.id === 'cones' ? 4 : selectedVehicle;
+        drawVehicle(runVehicleX, BASE_H * 0.82, vIdx, false);
+    }
+    // Worker animation
+    const emotion = runPhaseState === 'result' ? (runPhaseSuccess ? 'happy' : 'nervous') :
+                    getMatchEmotion(workerIdx, phase);
+    drawWorker(runWorkerX, BASE_H * 0.6, workerIdx, 1.2, false, runPhaseState === 'enter', emotion);
+    // Phase-specific visuals
+    if (runPhaseState === 'work') {
+        if (phase.id === 'chop') {
+            // Axe swinging particles
+            if (runAnimFrame % 20 < 10) {
+                spawnParticles(treeX - 20, treeY - 60, '#8D6E63', 1, 2);
+            }
+        } else if (phase.id === 'shave') {
+            if (runAnimFrame % 15 === 0) {
+                spawnParticles(treeX - 20, treeY - 40, '#D7CCC8', 2, 1.5);
+            }
+        } else if (phase.id === 'bucket') {
+            // Bucket line
+            ctx.strokeStyle = '#FFD600';
+            ctx.lineWidth = 3;
+            ctx.beginPath();
+            ctx.moveTo(runWorkerX + 30, BASE_H * 0.6);
+            ctx.lineTo(runWorkerX + 30, BASE_H * 0.6 - runBucketY);
+            ctx.stroke();
+            drawPixelRect(runWorkerX + 15, BASE_H * 0.6 - runBucketY - 15, 30, 15, '#FFD600');
+        } else if (phase.id === 'chip') {
+            // Chips flying
+            if (runAnimFrame % 8 === 0) {
+                spawnParticles(treeX - 60, treeY - 30, '#4CAF50', 3, 4);
+                spawnParticles(treeX - 60, treeY - 30, '#8D6E63', 2, 3);
+            }
+        } else if (phase.id === 'cones') {
+            // Draw placed cones
+            for (const cx of runConePositions) {
+                drawPixelRect(cx - 5, BASE_H * 0.62, 10, 15, '#FF6D00');
+                drawPixelRect(cx - 6, BASE_H * 0.62, 12, 3, '#FF6D00');
+            }
+        }
+    }
+    // Cones persist through all phases if placed
+    if (phase.id !== 'cones' && runConePositions.length > 0) {
+        for (const cx of runConePositions) {
+            drawPixelRect(cx - 5, BASE_H * 0.62, 10, 15, '#FF6D00');
+        }
+    }
+    // TIMBER text
+    if (phase.id === 'chop' && runPhaseState === 'result' && runPhaseSuccess && runAnimFrame > 60) {
+        const timberScale = Math.min(1, (runAnimFrame - 60) / 20);
+        ctx.save();
+        ctx.translate(BASE_W / 2, BASE_H * 0.3);
+        ctx.scale(timberScale * 2, timberScale * 2);
+        ctx.rotate(Math.sin(t * 10) * 0.05);
+        drawText('TIMBER!!!', 0, 0, 40, '#FF5722', 'center', true);
+        ctx.restore();
+    }
+    // Phase result indicators
+    if (runPhaseState === 'result') {
+        const icon = runPhaseSuccess ? '✅' : '❌';
+        drawText(icon, runWorkerX + 30, BASE_H * 0.6 - 50, 36, '#fff', 'center', false);
+    }
+    drawParticles();
+    drawFloatingTexts();
+    drawSpeechBubble();
+    // HUD
+    // Timer
+    const timerSec = Math.ceil(runTimer / 60);
+    const timerMin = Math.floor(timerSec / 60);
+    const timerS = timerSec % 60;
+    const timerColor = timerSec < 30 ? '#FF5722' : '#fff';
+    drawPixelRect(BASE_W / 2 - 70, 8, 140, 35, 'rgba(0,0,0,0.6)');
+    drawText(`⏱ ${timerMin}:${timerS.toString().padStart(2, '0')}`, BASE_W / 2, 26, 20, timerColor, 'center', true);
+    // Phase progress
+    const phases = currentJob.phases;
+    for (let i = 0; i < phases.length; i++) {
+        const px = 30 + i * 50;
+        const isDone = i < runPhaseIdx;
+        const isCurrent = i === runPhaseIdx;
+        drawPixelRect(px, 52, 42, 28, isCurrent ? 'rgba(255,255,0,0.3)' : 'rgba(0,0,0,0.3)');
+        drawText(phases[i].icon, px + 21, 66, 18, '#fff', 'center', false);
+        if (isDone) {
+            drawText(phaseResults[i] ? '✅' : '❌', px + 35, 55, 12, '#fff', 'center', false);
+        }
+    }
+    drawCoinCounter();
+    if (screenShake > 0) ctx.restore();
+}
+
+function updateRunning() {
+    if (state !== 'RUNNING') return;
+    runTimer--;
+    runAnimFrame++;
+    speechTimer--;
+    const phase = currentJob.phases[runPhaseIdx];
+    const workerIdx = assignments[runPhaseIdx];
+    if (runPhaseState === 'enter') {
+        // Worker walks on screen
+        runWorkerX = lerp(runWorkerX, runWorkerTargetX, 0.05);
+        if (phase.id === 'drive' || phase.id === 'cones') {
+            runVehicleX = lerp(runVehicleX, 500, 0.04);
+        }
+        if (runAnimFrame > 60) {
+            runPhaseState = 'work';
+            runAnimFrame = 0;
+            // Speech bubble
+            const w = WORKERS[workerIdx];
+            const match = getMatchLevel(workerIdx, phase);
+            showSpeech(runWorkerX, BASE_H * 0.6 - 60,
+                match === 'good' ? w.sayGood :
+                match === 'bad' ? w.sayBad : w.sayIdle, 90);
+            if (workerIdx === 2) playSound('honk'); // Truck honks
+        }
+    } else if (runPhaseState === 'work') {
+        // Phase-specific animation
+        if (phase.id === 'chop') {
+            if (runAnimFrame % 20 === 0) playSound('chop');
+        } else if (phase.id === 'shave') {
+            runShaveProgress = Math.min(1, runAnimFrame / runPhaseDuration);
+        } else if (phase.id === 'bucket') {
+            runBucketY = Math.sin(runAnimFrame * 0.03) * 80 + 80;
+        } else if (phase.id === 'chip') {
+            if (runAnimFrame % 15 === 0) playSound('chipper');
+            runChipCount = Math.floor(runAnimFrame / 20);
+        } else if (phase.id === 'cones') {
+            if (runAnimFrame % 40 === 0 && runConePositions.length < 6) {
+                runConePositions.push(450 + runConePositions.length * 60);
+            }
+        }
+        if (runAnimFrame >= runPhaseDuration) {
+            runPhaseState = 'result';
+            runAnimFrame = 0;
+            phaseResults.push(runPhaseSuccess);
+            if (runPhaseSuccess) {
+                playSound('success');
+                spawnParticles(runWorkerX, BASE_H * 0.55, '#4CAF50', 15, 4);
+                if (phase.id === 'chop') {
+                    playSound('timber');
+                    screenShake = 8;
+                }
+            } else {
+                playSound('fail');
+                spawnParticles(runWorkerX, BASE_H * 0.55, '#FF5722', 10, 3);
+            }
+        }
+    } else if (runPhaseState === 'result') {
+        // Tree falling animation for chop phase
+        if (phase.id === 'chop' && runPhaseSuccess) {
+            runTreeFallAngle = Math.min(90, runTreeFallAngle + 1.5);
+        }
+        if (runAnimFrame >= 120) {
+            // Next phase
+            runPhaseIdx++;
+            if (runPhaseIdx >= currentJob.phases.length || runTimer <= 0) {
+                // Fill remaining phases as failed if timer ran out
+                while (phaseResults.length < currentJob.phases.length) {
+                    phaseResults.push(false);
+                }
+                finishJob();
+            } else {
+                runAnimFrame = 0;
+                runPhaseState = 'enter';
+                runWorkerX = -50;
+                runVehicleX = -80;
+                setupPhaseAnimation();
+            }
+        }
+    }
+    // Timer ran out
+    if (runTimer <= 0 && runPhaseState !== 'result') {
+        while (phaseResults.length < currentJob.phases.length) {
+            phaseResults.push(false);
+        }
+        finishJob();
+    }
+}
+
+function finishJob() {
+    state = 'RESULTS';
+    runAnimFrame = 0;
+    // Calculate results
+    const successes = phaseResults.filter(r => r).length;
+    const total = phaseResults.length;
+    const ratio = successes / total;
+    earnedStars = ratio >= 1 ? 3 : ratio >= 0.6 ? 2 : 1;
+    earnedCoins = Math.floor(currentJob.basePay * ratio);
+    // Time bonus for quick completion
+    if (runTimer > 0 && timeLimit <= 2) earnedCoins += 30;
+    // Bonus check
+    bonusEarned = false;
+    if (currentJob.bonusCond === 'perfect' && successes === total) {
+        bonusEarned = true;
+        earnedCoins += 50;
+    } else if (currentJob.bonusCond === 'fast' && runTimer > timeLimit * 30 * 60) {
+        bonusEarned = true;
+        earnedCoins += 40;
+    } else if (currentJob.bonusCond === 'allworkers') {
+        const unique = new Set(assignments);
+        if (unique.size === 5) {
+            bonusEarned = true;
+            earnedCoins += 40;
+        }
+    }
+    coins += earnedCoins;
+    jobsCompleted++;
+    // Level up every 3 jobs
+    if (jobsCompleted % 3 === 0 && crewLevel < 5) {
+        crewLevel++;
+    }
+    save();
+}
+
+// ─── STATE: RESULTS ───────────────────────────────────────────
+function drawResults() {
+    drawScene();
+    drawPixelRect(0, 0, BASE_W, BASE_H, 'rgba(0,0,0,0.6)');
+    // Banner
+    const bannerY = 60 + Math.sin(t * 3) * 3;
+    drawText('JOB COMPLETE!', BASE_W / 2, bannerY, 40, '#FFD700', 'center', true);
+    drawText(currentJob.tree.name, BASE_W / 2, bannerY + 40, 20, '#fff', 'center', true);
+    // Phase results
+    const phases = currentJob.phases;
+    for (let i = 0; i < phases.length; i++) {
+        const py = 150 + i * 45;
+        const success = phaseResults[i];
+        drawPixelRect(250, py, 524, 38, success ? 'rgba(76,175,80,0.2)' : 'rgba(244,67,54,0.2)');
+        drawText(`${phases[i].icon} ${phases[i].name}`, 270, py + 19, 16, '#fff', 'left', false);
+        drawText(success ? '✅' : '❌', 740, py + 19, 20, '#fff', 'center', false);
+        // Worker who did it
+        const wIdx = assignments[i];
+        drawText(WORKERS[wIdx].name, 580, py + 19, 13, WORKERS[wIdx].color, 'left', false);
+    }
+    // Stars
+    const starY = 170 + phases.length * 45;
+    let starStr = '';
+    for (let i = 0; i < 3; i++) starStr += i < earnedStars ? '★' : '☆';
+    drawText(starStr, BASE_W / 2, starY, 40, '#FFD700', 'center', true);
+    // Coins
+    drawText(`+ $${earnedCoins}`, BASE_W / 2, starY + 50, 30, '#4CAF50', 'center', true);
+    if (bonusEarned) {
+        drawText('BONUS EARNED!', BASE_W / 2, starY + 85, 18, '#FF9800', 'center', true);
+    }
+    // Funny summary
+    const summaries = generateSummary();
+    drawText(summaries, BASE_W / 2, starY + 120, 14, '#B0BEC5', 'center', false);
+    // Level up?
+    if (jobsCompleted % 3 === 0) {
+        drawText('CREW LEVELED UP! Level ' + crewLevel, BASE_W / 2, starY + 150, 22, '#FFD700', 'center', true);
+        spawnParticles(BASE_W / 2, starY + 150, '#FFD700', 2, 3);
+    }
+    // Next job button
+    drawButton(BASE_W / 2 - 120, BASE_H - 90, 240, 55, 'NEXT JOB', '#4CAF50');
+    drawCoinCounter();
+    drawParticles();
+    // Coin animation
+    if (runAnimFrame < 30 && runAnimFrame % 3 === 0) {
+        spawnParticles(BASE_W / 2, BASE_H / 2, '#FFD700', 3, 5);
+        playSound('coin');
+    }
+    runAnimFrame++;
+}
+
+function generateSummary() {
+    const successes = phaseResults.filter(r => r).length;
+    const total = phaseResults.length;
+    const lines = [];
+    // Find notable events
+    for (let i = 0; i < assignments.length; i++) {
+        const w = WORKERS[assignments[i]];
+        const phase = currentJob.phases[i];
+        if (assignments[i] === 3 && phase.id === 'chop' && phaseResults[i]) {
+            lines.push('Tree Chopper yelled TIMBER so loud the neighbors called!');
+        }
+        if (assignments[i] === 4) {
+            lines.push(phaseResults[i] ? 'Ezra did a backflip for some reason.' : 'Ezra danced through the whole disaster.');
+        }
+        if (assignments[i] === 2 && phase.id === 'drive' && !phaseResults[i]) {
+            lines.push('Truck took a wrong turn... twice.');
+        }
+    }
+    lines.push(`${successes} out of ${total} tasks completed!`);
+    return lines.slice(0, 2).join(' ');
+}
+
+function handleResultsTap(gx, gy) {
+    if (hitBox(gx, gy, BASE_W / 2 - 120, BASE_H - 90, 240, 55)) {
+        playSound('tap');
+        currentJob = generateJob();
+        state = 'JOB_BOARD';
+    }
+}
+
+// ─── INPUT HANDLING ───────────────────────────────────────────
+function handleTap(e) {
+    e.preventDefault();
+    initAudio();
+    const touch = e.changedTouches ? e.changedTouches[0] : e;
+    const g = toGame(touch.clientX, touch.clientY);
+    // Tap feedback
+    tapFeedbacks.push({ x: g.x, y: g.y, life: 15 });
+    switch (state) {
+        case 'MENU': handleMenuTap(g.x, g.y); break;
+        case 'JOB_BOARD': handleJobBoardTap(g.x, g.y); break;
+        case 'PLANNING': handlePlanningTap(g.x, g.y); break;
+        case 'RESULTS': handleResultsTap(g.x, g.y); break;
+    }
+}
+
+canvas.addEventListener('touchstart', handleTap, { passive: false });
+canvas.addEventListener('mousedown', handleTap);
+
+// ─── MAIN LOOP ────────────────────────────────────────────────
+function drawTapFeedbacks() {
+    for (let i = tapFeedbacks.length - 1; i >= 0; i--) {
+        const f = tapFeedbacks[i];
+        f.life--;
+        if (f.life <= 0) { tapFeedbacks.splice(i, 1); continue; }
+        const r = (15 - f.life) * 2;
+        ctx.strokeStyle = `rgba(255,255,255,${f.life / 15})`;
+        ctx.lineWidth = 2;
+        ctx.beginPath();
+        ctx.arc(f.x, f.y, r, 0, Math.PI * 2);
+        ctx.stroke();
+    }
+}
+
+function gameLoop() {
+    t += 1 / 60;
+    ctx.save();
+    ctx.scale(scale, scale);
+    // Clear
+    ctx.fillStyle = '#000';
+    ctx.fillRect(0, 0, BASE_W, BASE_H);
+    switch (state) {
+        case 'MENU': menuBounce += 0.02; drawMenu(); break;
+        case 'JOB_BOARD': drawJobBoard(); break;
+        case 'PLANNING': drawPlanning(); break;
+        case 'RUNNING': updateRunning(); drawRunning(); break;
+        case 'RESULTS': drawResults(); break;
+    }
+    drawTapFeedbacks();
+    ctx.restore();
+    requestAnimationFrame(gameLoop);
+}
+
+requestAnimationFrame(gameLoop);
+</script>
+</body>
+</html>
