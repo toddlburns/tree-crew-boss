@@ -183,6 +183,30 @@ let speech = null, speechLife = 0;
 let shake = 0;
 let t = 0;
 
+// ─── MINI-GAME STATE ─────────────────────────────────────────
+let mgTargets = [];    // active targets/objects for current mini-game
+let mgScore = 0;       // hits so far
+let mgNeeded = 0;      // hits needed to pass
+let mgTotal = 0;       // total possible
+let mgTimer = 0;       // frames remaining in mini-game
+let mgTaskId = '';     // current mini-game task type
+let mgDiff = 1.0;      // difficulty multiplier (lower = easier)
+let mgLane = 1;        // player lane for drive mini-game (0,1,2)
+let mgSpawnTimer = 0;  // spawn interval counter
+let mgMisses = 0;      // miss counter for drive
+let mgInstrText = '';  // instruction text
+const MG_DURATION = 300; // 5 seconds at 60fps
+
+// Mini-game instruction text per task
+const MG_INSTRUCTIONS = {
+    chop: 'TAP the target to chop! 🪓',
+    drive: 'TAP top/bottom to dodge! 🚛',
+    shave: 'TAP branches to shave! 🪒',
+    cones: 'TAP the lit zones! 🔶',
+    bucket: 'TAP left/right to catch! 🏗',
+    chip: 'TAP wood to chip it! 🌿',
+};
+
 // ─── HELPERS ──────────────────────────────────────────────────
 function rand(a, b) { return Math.random() * (b - a) + a; }
 function pick(a) { return a[Math.floor(Math.random() * a.length)]; }
@@ -709,6 +733,429 @@ function tapPlanning(gx, gy) {
 }
 
 // ═══════════════════════════════════════════════════════════════
+// MINI-GAME LOGIC
+// ═══════════════════════════════════════════════════════════════
+
+function setupMiniGame(taskId, ml) {
+    mgTaskId = taskId;
+    mgTargets = [];
+    mgScore = 0;
+    mgMisses = 0;
+    mgTimer = MG_DURATION;
+    mgSpawnTimer = 0;
+    // Difficulty: great = easier (0.7), ok = normal (1.0), bad = harder (1.25)
+    mgDiff = ml === 'great' ? 0.7 : ml === 'bad' ? 1.25 : 1.0;
+    mgInstrText = MG_INSTRUCTIONS[taskId] || 'TAP!';
+
+    if (taskId === 'chop') {
+        mgNeeded = 8; mgTotal = 8;
+        spawnChopTarget();
+    } else if (taskId === 'drive') {
+        mgNeeded = 4; mgTotal = 4; // need to dodge 4 obstacles (mgScore counts dodges)
+        mgLane = 1; mgScore = 0; mgMisses = 0;
+    } else if (taskId === 'shave') {
+        mgNeeded = 6; mgTotal = 6;
+        // Spawn first batch of branches
+        for (let i = 0; i < 3; i++) spawnShaveTarget(i * 40);
+    } else if (taskId === 'cones') {
+        mgNeeded = 5; mgTotal = 5;
+        mgSpawnTimer = 30; // first cone zone appears quickly
+    } else if (taskId === 'bucket') {
+        mgNeeded = 5; mgTotal = 7;
+        mgLane = 2; // bucket position (0-4, 5 columns)
+    } else if (taskId === 'chip') {
+        mgNeeded = 6; mgTotal = 8;
+        // Spawn first batch
+        for (let i = 0; i < 3; i++) spawnChipTarget();
+    }
+}
+
+function spawnChopTarget() {
+    const baseSize = 40;
+    const sz = baseSize * (mgDiff === 0.7 ? 1.3 : mgDiff === 1.25 ? 0.75 : 1.0);
+    // Target on the tree trunk area
+    const treeX = 650, treeY = H * 0.65;
+    const ox = rand(-30, 30) * mgDiff;
+    const oy = rand(-100, -20);
+    mgTargets.push({ x: treeX + ox, y: treeY + oy, sz, life: 120, maxLife: 120, type: 'chop' });
+}
+
+function spawnShaveTarget(delay) {
+    const treeX = 650, treeY = H * 0.65;
+    const side = Math.random() < 0.5 ? -1 : 1;
+    const y = treeY + rand(-120, -20);
+    const lifeBase = mgDiff === 0.7 ? 150 : mgDiff === 1.25 ? 70 : 100;
+    mgTargets.push({ x: treeX + side * (job.tree.tw / 2 + rand(15, 45)), y, w: 50, h: 16, life: lifeBase + (delay || 0), maxLife: lifeBase, type: 'shave', side, spawned: false, delay: delay || 0 });
+}
+
+function spawnChipTarget() {
+    const treeX = 650, treeY = H * 0.65;
+    const x = treeX + rand(-200, 150);
+    const y = treeY + rand(-80, 30);
+    const lifeBase = mgDiff === 0.7 ? 150 : mgDiff === 1.25 ? 70 : 100;
+    mgTargets.push({ x, y, sz: 30, life: lifeBase, maxLife: lifeBase, type: 'chip' });
+}
+
+function updateMiniGame() {
+    mgTimer--;
+
+    if (mgTaskId === 'chop') {
+        // Targets just pulse and wait to be tapped; they don't expire quickly
+        for (let i = mgTargets.length - 1; i >= 0; i--) {
+            mgTargets[i].life--;
+            if (mgTargets[i].life <= 0) {
+                mgTargets.splice(i, 1);
+                // Respawn if player hasn't hit enough yet and time remains
+                if (mgScore < mgNeeded && mgTimer > 30) spawnChopTarget();
+            }
+        }
+        if (mgTargets.length === 0 && mgScore < mgNeeded && mgTimer > 30) spawnChopTarget();
+    } else if (mgTaskId === 'drive') {
+        mgSpawnTimer--;
+        // Spawn obstacles at intervals
+        if (mgSpawnTimer <= 0 && mgTargets.filter(t => t.type === 'obs').length < 2) {
+            const totalSpawned = mgTargets.filter(t => t.counted).length + mgTargets.filter(t => !t.counted && t.type === 'obs').length;
+            if (totalSpawned < mgTotal) {
+                const lane = Math.floor(Math.random() * 3);
+                const speed = (2.5 + mgDiff * 1.5);
+                mgTargets.push({ x: W + 40, lane, speed, type: 'obs', counted: false, w: 40, h: 40 });
+                mgSpawnTimer = Math.floor(60 + rand(0, 30));
+            }
+        }
+        // Move obstacles
+        for (let i = mgTargets.length - 1; i >= 0; i--) {
+            const ob = mgTargets[i];
+            if (ob.type !== 'obs') continue;
+            ob.x -= ob.speed;
+            // Check collision with player truck
+            const truckX = 200;
+            const laneYs = [H * 0.72, H * 0.79, H * 0.86];
+            const truckY = laneYs[mgLane];
+            const obY = laneYs[ob.lane];
+            if (ob.x < truckX + 30 && ob.x + ob.w > truckX - 30 && ob.lane === mgLane && !ob.counted) {
+                ob.counted = true;
+                mgMisses++;
+                shake = 6;
+                spawnP(truckX, truckY, '#FF5722', 8, 3);
+                floats.push({ t: 'HIT!', x: truckX, y: truckY - 30, life: 30, max: 30, c: '#FF5722', sz: 22 });
+                playSound('fail');
+            }
+            // Passed safely
+            if (ob.x < truckX - 50 && !ob.counted) {
+                ob.counted = true;
+                mgScore++;
+                floats.push({ t: '+1', x: truckX, y: truckY - 30, life: 30, max: 30, c: '#4CAF50', sz: 20 });
+                playSound('coin');
+            }
+            if (ob.x < -60) mgTargets.splice(i, 1);
+        }
+        // Check if all obstacles are done
+        const totalCounted = mgTargets.filter(t => t.counted).length + mgScore + mgMisses;
+        // End early if all obstacles passed
+    } else if (mgTaskId === 'shave') {
+        for (let i = mgTargets.length - 1; i >= 0; i--) {
+            const br = mgTargets[i];
+            if (br.delay > 0) { br.delay--; continue; }
+            br.life--;
+            if (br.life <= 0) {
+                mgTargets.splice(i, 1);
+                // Spawn replacement if needed
+                if (mgScore < mgNeeded && mgTimer > 40) spawnShaveTarget(0);
+            }
+        }
+    } else if (mgTaskId === 'cones') {
+        mgSpawnTimer--;
+        if (mgSpawnTimer <= 0 && mgTargets.length === 0 && mgScore < mgTotal) {
+            // Spawn a cone zone
+            const zoneX = 350 + mgScore * 60;
+            const lifeBase = mgDiff === 0.7 ? 120 : mgDiff === 1.25 ? 50 : 75;
+            mgTargets.push({ x: zoneX, y: H * 0.62, w: 50, h: 30, life: lifeBase, maxLife: lifeBase, type: 'cone', idx: mgScore });
+        }
+        for (let i = mgTargets.length - 1; i >= 0; i--) {
+            mgTargets[i].life--;
+            if (mgTargets[i].life <= 0) {
+                mgTargets.splice(i, 1);
+                mgSpawnTimer = 20;
+            }
+        }
+    } else if (mgTaskId === 'bucket') {
+        mgSpawnTimer--;
+        if (mgSpawnTimer <= 0) {
+            const spawned = mgTargets.filter(t => t.type === 'branch').length + mgScore + mgMisses;
+            if (spawned < mgTotal) {
+                const col = Math.floor(Math.random() * 5);
+                const speed = mgDiff === 0.7 ? 1.8 : mgDiff === 1.25 ? 3.5 : 2.5;
+                mgTargets.push({ x: 450 + col * 60, y: H * 0.2, col, speed, type: 'branch', w: 30, h: 15 });
+                mgSpawnTimer = Math.floor(35 + rand(0, 15));
+            }
+        }
+        for (let i = mgTargets.length - 1; i >= 0; i--) {
+            const br = mgTargets[i];
+            if (br.type !== 'branch') continue;
+            br.y += br.speed;
+            // Catch check
+            const bucketX = 450 + mgLane * 60;
+            const bucketY = H * 0.58;
+            if (br.y >= bucketY - 10 && br.y <= bucketY + 20) {
+                if (Math.abs(br.x - bucketX) < 40) {
+                    mgScore++;
+                    spawnP(bucketX, bucketY, '#4CAF50', 5, 2);
+                    floats.push({ t: '+1', x: bucketX, y: bucketY - 20, life: 30, max: 30, c: '#4CAF50', sz: 20 });
+                    playSound('coin');
+                    mgTargets.splice(i, 1);
+                    continue;
+                }
+            }
+            // Missed (fell past)
+            if (br.y > H * 0.65) {
+                mgMisses++;
+                floats.push({ t: 'MISS', x: br.x, y: H * 0.6, life: 25, max: 25, c: '#FF5722', sz: 16 });
+                mgTargets.splice(i, 1);
+            }
+        }
+    } else if (mgTaskId === 'chip') {
+        for (let i = mgTargets.length - 1; i >= 0; i--) {
+            mgTargets[i].life--;
+            if (mgTargets[i].life <= 0) {
+                mgTargets.splice(i, 1);
+                mgMisses++;
+                // Spawn more if needed
+                if (mgScore + mgMisses < mgTotal && mgTimer > 30) spawnChipTarget();
+            }
+        }
+        // Keep some targets available
+        if (mgTargets.length === 0 && mgScore + mgMisses < mgTotal && mgTimer > 30) {
+            spawnChipTarget();
+        }
+    }
+}
+
+function drawMiniGame() {
+    const playAreaX = 300, playAreaY = H * 0.15;
+
+    // Timer bar across top of play area
+    const timerW = 400, timerH = 10;
+    const timerX = W / 2 - timerW / 2, timerY = 55;
+    rect(timerX, timerY, timerW, timerH, 'rgba(255,255,255,0.2)');
+    const timerFrac = mgTimer / MG_DURATION;
+    rect(timerX, timerY, timerW * timerFrac, timerH, timerFrac > 0.3 ? '#4CAF50' : '#FF5722');
+
+    // Score counter top-right
+    const taskIcons = { chop: '🪓', drive: '🚛', shave: '🪒', cones: '🔶', bucket: '🏗', chip: '🌿' };
+    const icon = taskIcons[mgTaskId] || '';
+    if (mgTaskId === 'drive') {
+        text(`Dodged: ${mgScore}/${mgNeeded} ${icon}`, W - 100, 82, 18, '#fff', 'center', true);
+    } else {
+        text(`Hits: ${mgScore}/${mgNeeded} ${icon}`, W - 100, 82, 18, '#fff', 'center', true);
+    }
+
+    if (mgTaskId === 'chop') {
+        for (const tg of mgTargets) {
+            const pulse = 1 + Math.sin(t * 8) * 0.15;
+            const r = tg.sz / 2 * pulse;
+            const alpha = Math.min(1, tg.life / 20);
+            ctx.globalAlpha = alpha;
+            // Bullseye
+            ctx.fillStyle = '#FF5722'; ctx.beginPath(); ctx.arc(tg.x, tg.y, r, 0, Math.PI * 2); ctx.fill();
+            ctx.fillStyle = '#fff'; ctx.beginPath(); ctx.arc(tg.x, tg.y, r * 0.65, 0, Math.PI * 2); ctx.fill();
+            ctx.fillStyle = '#FF5722'; ctx.beginPath(); ctx.arc(tg.x, tg.y, r * 0.3, 0, Math.PI * 2); ctx.fill();
+            ctx.globalAlpha = 1;
+            // TAP prompt
+            if (tg.life > 30) drawArrow(tg.x, tg.y - r - 20, 'down', '#FFD700');
+        }
+    } else if (mgTaskId === 'drive') {
+        const laneYs = [H * 0.72, H * 0.79, H * 0.86];
+        const truckX = 200;
+        // Draw lane indicators
+        for (let i = 0; i < 3; i++) {
+            ctx.strokeStyle = i === mgLane ? 'rgba(255,255,0,0.4)' : 'rgba(255,255,255,0.1)';
+            ctx.lineWidth = 2;
+            ctx.setLineDash([8, 8]);
+            ctx.beginPath(); ctx.moveTo(100, laneYs[i]); ctx.lineTo(W - 50, laneYs[i]); ctx.stroke();
+            ctx.setLineDash([]);
+        }
+        // Draw truck
+        drawVehicle(truckX, laneYs[mgLane], 0);
+        // Draw obstacles
+        for (const ob of mgTargets) {
+            if (ob.type !== 'obs') continue;
+            const oy = laneYs[ob.lane];
+            // Rock/pothole
+            ctx.fillStyle = '#795548';
+            ctx.beginPath(); ctx.arc(ob.x, oy, 18, 0, Math.PI * 2); ctx.fill();
+            ctx.fillStyle = '#5D4037';
+            ctx.beginPath(); ctx.arc(ob.x, oy - 3, 12, 0, Math.PI * 2); ctx.fill();
+            text('🪨', ob.x, oy - 2, 20, '#fff', 'center', false);
+        }
+        // Tap zones hint
+        if (mgTimer > 240) {
+            text('⬆ TAP TOP', W / 2, H * 0.69, 14, 'rgba(255,255,255,0.5)', 'center', false);
+            text('⬇ TAP BOTTOM', W / 2, H * 0.91, 14, 'rgba(255,255,255,0.5)', 'center', false);
+        }
+    } else if (mgTaskId === 'shave') {
+        for (const br of mgTargets) {
+            if (br.delay > 0) continue;
+            const alpha = Math.min(1, br.life / 20);
+            ctx.globalAlpha = alpha;
+            // Branch sticking out
+            ctx.fillStyle = '#8D6E63';
+            ctx.fillRect(br.x - br.w / 2, br.y - br.h / 2, br.w, br.h);
+            // Leaves on branch
+            ctx.fillStyle = '#4CAF50';
+            const lx = br.side > 0 ? br.x + br.w / 2 - 10 : br.x - br.w / 2 - 5;
+            ctx.beginPath(); ctx.arc(lx, br.y, 10, 0, Math.PI * 2); ctx.fill();
+            ctx.globalAlpha = 1;
+            if (br.life > 20) drawArrow(br.x, br.y - 25, 'down', '#FFD700');
+        }
+    } else if (mgTaskId === 'cones') {
+        // Draw already-placed cones
+        for (let i = 0; i < mgScore; i++) {
+            const cx = 350 + i * 60;
+            rect(cx - 8, H * 0.62, 16, 20, '#FF6D00');
+            text('🔶', cx, H * 0.60, 16, '#fff', 'center', false);
+        }
+        // Draw active zone
+        for (const z of mgTargets) {
+            const pulse = Math.sin(t * 10) * 0.3 + 0.7;
+            ctx.globalAlpha = pulse * Math.min(1, z.life / 15);
+            ctx.fillStyle = '#FFD700';
+            ctx.strokeStyle = '#FF6D00'; ctx.lineWidth = 3;
+            ctx.beginPath(); ctx.roundRect(z.x - z.w / 2, z.y - z.h / 2, z.w, z.h, 6); ctx.fill(); ctx.stroke();
+            ctx.globalAlpha = 1;
+            text('TAP!', z.x, z.y, 14, '#000', 'center', true);
+            drawArrow(z.x, z.y - z.h / 2 - 22, 'down', '#FF6D00');
+        }
+    } else if (mgTaskId === 'bucket') {
+        const cols = 5;
+        const startX = 450;
+        const spacing = 60;
+        const bucketX = startX + mgLane * spacing;
+        const bucketY = H * 0.58;
+        // Draw column guides
+        for (let i = 0; i < cols; i++) {
+            ctx.strokeStyle = i === mgLane ? 'rgba(255,255,0,0.3)' : 'rgba(255,255,255,0.05)';
+            ctx.lineWidth = 1; ctx.setLineDash([4, 4]);
+            ctx.beginPath(); ctx.moveTo(startX + i * spacing, H * 0.2); ctx.lineTo(startX + i * spacing, H * 0.6); ctx.stroke();
+            ctx.setLineDash([]);
+        }
+        // Draw bucket
+        ctx.fillStyle = '#FFD600';
+        ctx.beginPath();
+        ctx.moveTo(bucketX - 25, bucketY); ctx.lineTo(bucketX - 18, bucketY + 20);
+        ctx.lineTo(bucketX + 18, bucketY + 20); ctx.lineTo(bucketX + 25, bucketY);
+        ctx.closePath(); ctx.fill();
+        ctx.strokeStyle = '#F9A825'; ctx.lineWidth = 2; ctx.stroke();
+        // Draw falling branches
+        for (const br of mgTargets) {
+            if (br.type !== 'branch') continue;
+            ctx.fillStyle = '#8D6E63';
+            ctx.fillRect(br.x - 15, br.y - 5, 30, 10);
+            ctx.fillStyle = '#4CAF50';
+            ctx.beginPath(); ctx.arc(br.x + 10, br.y - 5, 7, 0, Math.PI * 2); ctx.fill();
+        }
+        // Tap zone hints
+        if (mgTimer > 240) {
+            text('⬅ TAP LEFT', startX - 30, bucketY + 10, 13, 'rgba(255,255,255,0.5)', 'center', false);
+            text('TAP RIGHT ➡', startX + (cols - 1) * spacing + 40, bucketY + 10, 13, 'rgba(255,255,255,0.5)', 'center', false);
+        }
+    } else if (mgTaskId === 'chip') {
+        // Draw chipper in center
+        const chipperX = 550, chipperY = H * 0.55;
+        rect(chipperX - 25, chipperY - 20, 50, 40, '#FF8F00');
+        rect(chipperX - 30, chipperY - 25, 15, 10, '#E65100');
+        text('⚙', chipperX, chipperY, 22, '#fff', 'center', false);
+        // Draw wood pieces
+        for (const wp of mgTargets) {
+            const alpha = Math.min(1, wp.life / 20);
+            ctx.globalAlpha = alpha;
+            const pulse = 1 + Math.sin(t * 6 + wp.x) * 0.1;
+            ctx.fillStyle = '#8D6E63';
+            ctx.save(); ctx.translate(wp.x, wp.y); ctx.scale(pulse, pulse);
+            ctx.fillRect(-wp.sz / 2, -wp.sz / 2, wp.sz, wp.sz * 0.6);
+            ctx.fillStyle = '#6D4C41';
+            ctx.fillRect(-wp.sz / 2, -wp.sz / 2 + wp.sz * 0.6, wp.sz, wp.sz * 0.2);
+            ctx.restore();
+            ctx.globalAlpha = 1;
+            if (wp.life > 25) drawArrow(wp.x, wp.y - wp.sz / 2 - 22, 'down', '#FFD700');
+        }
+    }
+}
+
+function tapMiniGame(gx, gy) {
+    if (mgTaskId === 'chop') {
+        for (let i = mgTargets.length - 1; i >= 0; i--) {
+            const tg = mgTargets[i];
+            const dx = gx - tg.x, dy = gy - tg.y;
+            if (Math.sqrt(dx * dx + dy * dy) < tg.sz / 2 + 15) { // generous hit area
+                mgScore++;
+                spawnP(tg.x, tg.y, '#8D6E63', 6, 3);
+                floats.push({ t: '+1', x: tg.x, y: tg.y - 20, life: 25, max: 25, c: '#4CAF50', sz: 22 });
+                playSound('chop');
+                shake = 3;
+                mgTargets.splice(i, 1);
+                if (mgScore < mgNeeded) spawnChopTarget();
+                return;
+            }
+        }
+        // Miss
+        floats.push({ t: 'miss', x: gx, y: gy, life: 20, max: 20, c: '#FF5722', sz: 14 });
+    } else if (mgTaskId === 'drive') {
+        // Tap top half = move up, bottom half = move down
+        const midY = H * 0.79;
+        if (gy < midY && mgLane > 0) { mgLane--; playSound('tap'); }
+        else if (gy >= midY && mgLane < 2) { mgLane++; playSound('tap'); }
+    } else if (mgTaskId === 'shave') {
+        for (let i = mgTargets.length - 1; i >= 0; i--) {
+            const br = mgTargets[i];
+            if (br.delay > 0) continue;
+            if (hit(gx, gy, br.x - br.w / 2 - 10, br.y - br.h / 2 - 10, br.w + 20, br.h + 20)) {
+                mgScore++;
+                spawnP(br.x, br.y, '#D7CCC8', 5, 2);
+                floats.push({ t: '+1', x: br.x, y: br.y - 20, life: 25, max: 25, c: '#4CAF50', sz: 20 });
+                playSound('chop');
+                mgTargets.splice(i, 1);
+                if (mgScore < mgNeeded && mgTimer > 40) spawnShaveTarget(10);
+                return;
+            }
+        }
+        floats.push({ t: 'miss', x: gx, y: gy, life: 20, max: 20, c: '#FF5722', sz: 14 });
+    } else if (mgTaskId === 'cones') {
+        for (let i = mgTargets.length - 1; i >= 0; i--) {
+            const z = mgTargets[i];
+            if (hit(gx, gy, z.x - z.w / 2 - 10, z.y - z.h / 2 - 10, z.w + 20, z.h + 20)) {
+                mgScore++;
+                spawnP(z.x, z.y, '#FF6D00', 6, 2);
+                floats.push({ t: '🔶 +1', x: z.x, y: z.y - 20, life: 25, max: 25, c: '#FF6D00', sz: 20 });
+                playSound('coin');
+                mgTargets.splice(i, 1);
+                mgSpawnTimer = 25;
+                return;
+            }
+        }
+    } else if (mgTaskId === 'bucket') {
+        // Tap left/right side of screen to move bucket
+        const bucketCenterX = 450 + mgLane * 60;
+        if (gx < bucketCenterX && mgLane > 0) { mgLane--; playSound('tap'); }
+        else if (gx >= bucketCenterX && mgLane < 4) { mgLane++; playSound('tap'); }
+    } else if (mgTaskId === 'chip') {
+        for (let i = mgTargets.length - 1; i >= 0; i--) {
+            const wp = mgTargets[i];
+            if (hit(gx, gy, wp.x - wp.sz / 2 - 10, wp.y - wp.sz / 2 - 10, wp.sz + 20, wp.sz + 20)) {
+                mgScore++;
+                spawnP(wp.x, wp.y, '#4CAF50', 5, 3);
+                spawnP(wp.x, wp.y, '#8D6E63', 3, 2);
+                floats.push({ t: '+1', x: wp.x, y: wp.y - 20, life: 25, max: 25, c: '#4CAF50', sz: 20 });
+                playSound('chipper');
+                mgTargets.splice(i, 1);
+                if (mgScore + mgMisses < mgTotal && mgTimer > 30) spawnChipTarget();
+                return;
+            }
+        }
+        floats.push({ t: 'miss', x: gx, y: gy, life: 20, max: 20, c: '#FF5722', sz: 14 });
+    }
+}
+
+// ═══════════════════════════════════════════════════════════════
 // SCREEN: RUNNING
 // ═══════════════════════════════════════════════════════════════
 function startRun() {
@@ -725,13 +1172,9 @@ function setupRun() {
     runBucketY = 0; runCones = [];
     const task = job.tasks[runIdx];
     const wi = assignments[runIdx];
-    const w = CREW[wi];
-    let chance = 0.6;
     const ml = matchLevel(wi, task);
-    if (ml === 'great') chance = 0.85;
-    else if (ml === 'bad') chance = 0.35;
-    if (w.best === 'wild') chance = 0.5;
-    runSuccess = Math.random() < clamp(chance, 0.1, 0.95);
+    setupMiniGame(task.id, ml);
+    runSuccess = false; // determined by mini-game performance
 }
 
 function drawRunning() {
@@ -755,22 +1198,31 @@ function drawRunning() {
                 matchLevel(wi, task) === 'great' ? 'happy' : matchLevel(wi, task) === 'bad' ? 'nervous' : null;
     drawWorker(runWorkerX, H * 0.6, wi, 1.4, false, runState === 'enter', emo);
 
-    // Work visuals
+    // Work visuals — mini-game draws its own targets
     if (runState === 'work') {
-        if (task.id === 'chop' && runFrame % 20 < 10) spawnP(treeX - 20, treeY - 60, '#8D6E63', 1, 2);
-        if (task.id === 'shave' && runFrame % 15 === 0) spawnP(treeX - 20, treeY - 40, '#D7CCC8', 2, 1.5);
-        if (task.id === 'chip' && runFrame % 8 === 0) { spawnP(treeX - 60, treeY - 30, '#4CAF50', 3, 4); spawnP(treeX - 60, treeY - 30, '#8D6E63', 2, 3); }
+        drawMiniGame();
+        // Ambient particles for atmosphere
+        if (task.id === 'chop' && runFrame % 30 < 10) spawnP(treeX - 20, treeY - 60, '#8D6E63', 1, 1);
         if (task.id === 'bucket') {
             ctx.strokeStyle = '#FFD600'; ctx.lineWidth = 3;
             ctx.beginPath(); ctx.moveTo(runWorkerX + 30, H * 0.6); ctx.lineTo(runWorkerX + 30, H * 0.6 - runBucketY); ctx.stroke();
             rect(runWorkerX + 15, H * 0.6 - runBucketY - 15, 30, 15, '#FFD600');
         }
-        if (task.id === 'cones') {
-            for (const cx of runCones) { rect(cx - 5, H * 0.62, 10, 15, '#FF6D00'); }
-        }
     }
     // Persistent cones
-    if (task.id !== 'cones') for (const cx of runCones) rect(cx - 5, H * 0.62, 10, 15, '#FF6D00');
+    for (const cx of runCones) rect(cx - 5, H * 0.62, 10, 15, '#FF6D00');
+
+    // Instruction overlay
+    if (runState === 'instruct') {
+        const alpha = runFrame < 15 ? runFrame / 15 : runFrame > 70 ? (90 - runFrame) / 20 : 1;
+        ctx.globalAlpha = Math.max(0, alpha);
+        rect(W / 2 - 250, H / 2 - 60, 500, 120, 'rgba(0,0,0,0.75)');
+        ctx.strokeStyle = '#FFD700'; ctx.lineWidth = 3;
+        ctx.beginPath(); ctx.roundRect(W / 2 - 250, H / 2 - 60, 500, 120, 12); ctx.stroke();
+        text(mgInstrText, W / 2, H / 2 - 15, 30, '#FFD700', 'center', true);
+        text('Get ready...', W / 2, H / 2 + 30, 18, '#fff', 'center', false);
+        ctx.globalAlpha = 1;
+    }
 
     // TIMBER!
     if (task.id === 'chop' && runState === 'result' && runSuccess && runFrame > 40) {
@@ -813,19 +1265,30 @@ function updateRunning() {
         runWorkerX = lerp(runWorkerX, 380, 0.06);
         if (task.id === 'drive' || task.id === 'cones') runVehicleX = lerp(runVehicleX, 500, 0.05);
         if (runFrame > 50) {
-            runState = 'work'; runFrame = 0;
+            runState = 'instruct'; runFrame = 0;
             const w = CREW[assignments[runIdx]];
             const ml = matchLevel(assignments[runIdx], task);
             showSpeech(runWorkerX, H * 0.6 - 70, ml === 'great' ? w.good : ml === 'bad' ? w.bad : w.idle, 80);
             if (assignments[runIdx] === 2) playSound('honk');
         }
+    } else if (runState === 'instruct') {
+        // Show instruction overlay for 1.5 seconds (90 frames)
+        if (runFrame > 90) {
+            runState = 'work'; runFrame = 0;
+        }
     } else if (runState === 'work') {
-        if (task.id === 'chop' && runFrame % 20 === 0) playSound('chop');
-        if (task.id === 'shave') runShave = Math.min(1, runFrame / 150);
+        updateMiniGame();
+        // Update visual effects based on score progress
+        if (task.id === 'shave') runShave = Math.min(1, mgScore / Math.max(1, mgNeeded));
+        if (task.id === 'cones') {
+            runCones = [];
+            for (let i = 0; i < mgScore; i++) runCones.push(350 + i * 60);
+        }
         if (task.id === 'bucket') runBucketY = Math.sin(runFrame * 0.03) * 80 + 80;
-        if (task.id === 'chip' && runFrame % 15 === 0) playSound('chipper');
-        if (task.id === 'cones' && runFrame % 35 === 0 && runCones.length < 5) runCones.push(420 + runCones.length * 55);
-        if (runFrame >= 150) {
+
+        if (mgTimer <= 0) {
+            // Mini-game over — evaluate result
+            runSuccess = mgScore >= mgNeeded;
             runState = 'result'; runFrame = 0;
             phaseResults.push(runSuccess);
             if (runSuccess) {
@@ -922,6 +1385,7 @@ function handleTap(e) {
         case 'MENU': tapMenu(g.x, g.y); break;
         case 'JOB_BOARD': tapJobBoard(g.x, g.y); break;
         case 'PLANNING': tapPlanning(g.x, g.y); break;
+        case 'RUNNING': if (runState === 'work') tapMiniGame(g.x, g.y); break;
         case 'RESULTS': tapResults(g.x, g.y); break;
     }
 }
