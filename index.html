@@ -505,7 +505,55 @@ function drawPlanning() {
     drawScene();
     rect(0, 0, W, H, 'rgba(0,0,0,0.55)');
 
-    if (planStep < job.tasks.length) {
+    // ─── PICK CONFIRMATION OVERLAY (renders over everything) ───
+    if (pickConfirm >= 0 && pickTimer > 0) {
+        pickTimer--;
+        const progress = 1 - pickTimer / PICK_DURATION;
+        const w = CREW[pickConfirm];
+        const prevTask = job.tasks[Math.min(planStep - 1, job.tasks.length - 1)];
+
+        // Darken background
+        rect(0, 0, W, H, 'rgba(0,0,0,0.45)');
+
+        // Big confirmation banner
+        const bannerScale = Math.min(1, progress * 3); // quick zoom in
+        ctx.save();
+        ctx.translate(W / 2, H / 2 - 30);
+        ctx.scale(bannerScale, bannerScale);
+
+        // Banner background
+        ctx.fillStyle = 'rgba(76,175,80,0.9)';
+        ctx.beginPath(); ctx.roundRect(-220, -80, 440, 160, 16); ctx.fill();
+        ctx.strokeStyle = '#fff'; ctx.lineWidth = 3;
+        ctx.beginPath(); ctx.roundRect(-220, -80, 440, 160, 16); ctx.stroke();
+
+        text('✅ ' + w.name + ' is on it!', 0, -40, 30, '#fff', 'center', true);
+        text(prevTask.icon + ' ' + prevTask.name, 0, 10, 22, 'rgba(255,255,255,0.9)', 'center', false);
+
+        // Worker in banner
+        drawWorker(0, 60, pickConfirm, 1.2, true, true, 'happy');
+
+        ctx.restore();
+
+        // Progress bar at bottom of banner showing auto-advance
+        const barW = 300, barH = 8;
+        const barX = W / 2 - barW / 2, barY = H / 2 + 75;
+        rect(barX, barY, barW, barH, 'rgba(255,255,255,0.3)');
+        rect(barX, barY, barW * progress, barH, '#fff');
+
+        // Show what's next
+        if (planStep < job.tasks.length) {
+            text('Next: ' + job.tasks[planStep].icon + ' ' + job.tasks[planStep].name, W / 2, H / 2 + 110, 18, 'rgba(255,255,255,0.7)', 'center', false);
+        } else {
+            text('All workers assigned! 🎉', W / 2, H / 2 + 110, 22, '#FFD700', 'center', true);
+        }
+
+        // Auto-advance when timer hits 0
+        if (pickTimer <= 0) {
+            pickConfirm = -1;
+            spawnP(W / 2, H / 2, '#4CAF50', 12, 5);
+        }
+    } else if (planStep < job.tasks.length) {
         // ─── ASSIGNING MODE ───
         const task = job.tasks[planStep];
 
@@ -579,7 +627,7 @@ function drawPlanning() {
         }
 
         // Summary of what's been assigned so far
-        if (planStep > 0 && pickConfirm < 0) {
+        if (planStep > 0) {
             const sumY = H - 65;
             rect(10, sumY - 10, W - 20, 40, 'rgba(0,0,0,0.3)');
             let sumTxt = 'Assigned: ';
@@ -588,57 +636,7 @@ function drawPlanning() {
             }
             text(sumTxt, W / 2, sumY + 10, 14, '#aaa', 'center', false);
         }
-
-        // ─── PICK CONFIRMATION OVERLAY ───
-        if (pickConfirm >= 0 && pickTimer > 0) {
-            pickTimer--;
-            const progress = 1 - pickTimer / PICK_DURATION;
-            const w = CREW[pickConfirm];
-            const prevTask = job.tasks[planStep - 1];
-
-            // Darken background
-            rect(0, 0, W, H, 'rgba(0,0,0,0.45)');
-
-            // Big confirmation banner
-            const bannerScale = Math.min(1, progress * 3); // quick zoom in
-            ctx.save();
-            ctx.translate(W / 2, H / 2 - 30);
-            ctx.scale(bannerScale, bannerScale);
-
-            // Banner background
-            ctx.fillStyle = 'rgba(76,175,80,0.9)';
-            ctx.beginPath(); ctx.roundRect(-220, -80, 440, 160, 16); ctx.fill();
-            ctx.strokeStyle = '#fff'; ctx.lineWidth = 3;
-            ctx.beginPath(); ctx.roundRect(-220, -80, 440, 160, 16); ctx.stroke();
-
-            text('✅ ' + w.name + ' is on it!', 0, -40, 30, '#fff', 'center', true);
-            text(prevTask.icon + ' ' + prevTask.name, 0, 10, 22, 'rgba(255,255,255,0.9)', 'center', false);
-
-            // Worker in banner
-            drawWorker(0, 60, pickConfirm, 1.2, true, true, 'happy');
-
-            ctx.restore();
-
-            // Progress bar at bottom of banner showing auto-advance
-            const barW = 300, barH = 8;
-            const barX = W / 2 - barW / 2, barY = H / 2 + 75;
-            rect(barX, barY, barW, barH, 'rgba(255,255,255,0.3)');
-            rect(barX, barY, barW * progress, barH, '#fff');
-
-            // Show what's next
-            if (planStep < job.tasks.length) {
-                text('Next: ' + job.tasks[planStep].icon + ' ' + job.tasks[planStep].name, W / 2, H / 2 + 110, 18, 'rgba(255,255,255,0.7)', 'center', false);
-            } else {
-                text('All workers assigned!', W / 2, H / 2 + 110, 20, '#FFD700', 'center', true);
-            }
-
-            // Auto-advance when timer hits 0
-            if (pickTimer <= 0) {
-                pickConfirm = -1;
-                spawnP(W / 2, H / 2, '#4CAF50', 12, 5);
-            }
-        }
-    } else if (pickConfirm < 0) {
+    } else {
         // ─── ALL ASSIGNED - READY TO GO ───
         text('YOUR TEAM IS READY!', W / 2, 55, 36, '#FFD700', 'center', true);
 
