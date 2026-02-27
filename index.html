@@ -170,6 +170,9 @@ let state = 'MENU';
 let job = null;        // current job
 let planStep = 0;      // which task we're assigning in PLANNING
 let assignments = [];  // worker index per task
+let pickConfirm = -1;  // worker index being confirmed, -1 = none
+let pickTimer = 0;     // frames remaining in pick confirmation
+const PICK_DURATION = 70; // ~1.2 seconds of confirmation display
 let phaseResults = [];
 let runIdx = 0, runState = 'enter', runFrame = 0, runSuccess = false;
 let runTimer = 0, runWorkerX = -50, runVehicleX = -80, runTreeFall = 0, runShave = 0;
@@ -576,7 +579,7 @@ function drawPlanning() {
         }
 
         // Summary of what's been assigned so far
-        if (planStep > 0) {
+        if (planStep > 0 && pickConfirm < 0) {
             const sumY = H - 65;
             rect(10, sumY - 10, W - 20, 40, 'rgba(0,0,0,0.3)');
             let sumTxt = 'Assigned: ';
@@ -585,32 +588,92 @@ function drawPlanning() {
             }
             text(sumTxt, W / 2, sumY + 10, 14, '#aaa', 'center', false);
         }
-    } else {
-        // ─── ALL ASSIGNED - READY TO GO ───
-        text('ALL SET!', W / 2, 60, 36, '#FFD700', 'center', true);
-        text('Here\'s your plan:', W / 2, 100, 20, '#fff', 'center', false);
 
-        // Show the full plan
+        // ─── PICK CONFIRMATION OVERLAY ───
+        if (pickConfirm >= 0 && pickTimer > 0) {
+            pickTimer--;
+            const progress = 1 - pickTimer / PICK_DURATION;
+            const w = CREW[pickConfirm];
+            const prevTask = job.tasks[planStep - 1];
+
+            // Darken background
+            rect(0, 0, W, H, 'rgba(0,0,0,0.45)');
+
+            // Big confirmation banner
+            const bannerScale = Math.min(1, progress * 3); // quick zoom in
+            ctx.save();
+            ctx.translate(W / 2, H / 2 - 30);
+            ctx.scale(bannerScale, bannerScale);
+
+            // Banner background
+            ctx.fillStyle = 'rgba(76,175,80,0.9)';
+            ctx.beginPath(); ctx.roundRect(-220, -80, 440, 160, 16); ctx.fill();
+            ctx.strokeStyle = '#fff'; ctx.lineWidth = 3;
+            ctx.beginPath(); ctx.roundRect(-220, -80, 440, 160, 16); ctx.stroke();
+
+            text('✅ ' + w.name + ' is on it!', 0, -40, 30, '#fff', 'center', true);
+            text(prevTask.icon + ' ' + prevTask.name, 0, 10, 22, 'rgba(255,255,255,0.9)', 'center', false);
+
+            // Worker in banner
+            drawWorker(0, 60, pickConfirm, 1.2, true, true, 'happy');
+
+            ctx.restore();
+
+            // Progress bar at bottom of banner showing auto-advance
+            const barW = 300, barH = 8;
+            const barX = W / 2 - barW / 2, barY = H / 2 + 75;
+            rect(barX, barY, barW, barH, 'rgba(255,255,255,0.3)');
+            rect(barX, barY, barW * progress, barH, '#fff');
+
+            // Show what's next
+            if (planStep < job.tasks.length) {
+                text('Next: ' + job.tasks[planStep].icon + ' ' + job.tasks[planStep].name, W / 2, H / 2 + 110, 18, 'rgba(255,255,255,0.7)', 'center', false);
+            } else {
+                text('All workers assigned!', W / 2, H / 2 + 110, 20, '#FFD700', 'center', true);
+            }
+
+            // Auto-advance when timer hits 0
+            if (pickTimer <= 0) {
+                pickConfirm = -1;
+                spawnP(W / 2, H / 2, '#4CAF50', 12, 5);
+            }
+        }
+    } else if (pickConfirm < 0) {
+        // ─── ALL ASSIGNED - READY TO GO ───
+        text('YOUR TEAM IS READY!', W / 2, 55, 36, '#FFD700', 'center', true);
+
+        // Show the full plan - big and clear
         for (let i = 0; i < job.tasks.length; i++) {
-            const ry = 140 + i * 65;
-            rect(200, ry, W - 400, 55, 'rgba(255,255,255,0.1)');
-            text(`${i + 1}. ${job.tasks[i].icon} ${job.tasks[i].name}`, 230, ry + 28, 20, '#fff', 'left', false);
-            drawWorker(W - 260, ry + 30, assignments[i], 0.7, false, false,
+            const ry = 110 + i * 75;
+            rect(180, ry, W - 360, 62, 'rgba(255,255,255,0.1)');
+            ctx.strokeStyle = '#555'; ctx.lineWidth = 1; ctx.strokeRect(180, ry, W - 360, 62);
+            text(`${job.tasks[i].icon} ${job.tasks[i].name}`, 210, ry + 31, 22, '#fff', 'left', true);
+            drawWorker(W - 240, ry + 35, assignments[i], 0.8, false, true,
                 matchLevel(assignments[i], job.tasks[i]) === 'great' ? 'happy' : null);
-            text(CREW[assignments[i]].name, W - 310, ry + 28, 16, CREW[assignments[i]].color, 'right', true);
+            text(CREW[assignments[i]].name, W - 290, ry + 31, 18, CREW[assignments[i]].color, 'right', true);
+            // Arrow connecting
+            text('→', W / 2 + 60, ry + 31, 24, '#FFD700', 'center', false);
         }
 
-        const btnY = 160 + job.tasks.length * 65;
-        btn(W / 2 - 160, btnY, 320, 70, 'GO GO GO!', '#4CAF50', true);
-        drawArrow(W / 2, btnY - 5, 'down');
+        const btnY = Math.max(130 + job.tasks.length * 75, H - 170);
+        btn(W / 2 - 170, btnY, 340, 75, 'GO GO GO! 🪓', '#4CAF50', true);
+        drawArrow(W / 2, btnY - 8, 'down');
 
         // Redo button
-        btn(W / 2 - 80, btnY + 85, 160, 40, 'Start Over', '#666', false);
+        btn(W / 2 - 80, btnY + 90, 160, 40, 'Start Over', '#666', false);
     }
     drawHUD();
 }
 
 function tapPlanning(gx, gy) {
+    // Ignore taps during pick confirmation (or tap to skip it)
+    if (pickConfirm >= 0) {
+        pickTimer = 0;
+        pickConfirm = -1;
+        playSound('tap');
+        spawnP(W / 2, H / 2, '#4CAF50', 12, 5);
+        return;
+    }
     if (planStep < job.tasks.length) {
         // Tap a worker card
         const cardW = 170, cardH = 180, gap = 15;
@@ -623,22 +686,26 @@ function tapPlanning(gx, gy) {
                 playSound('assign');
                 assignments.push(i);
                 planStep++;
+                // Show confirmation overlay
+                pickConfirm = i;
+                pickTimer = PICK_DURATION;
                 return;
             }
         }
     } else {
         // GO button
-        const btnY = 160 + job.tasks.length * 65;
-        if (hit(gx, gy, W / 2 - 160, btnY, 320, 70)) {
+        const btnY = Math.max(130 + job.tasks.length * 75, H - 170);
+        if (hit(gx, gy, W / 2 - 170, btnY, 340, 75)) {
             playSound('start');
             startRun();
             return;
         }
         // Redo
-        if (hit(gx, gy, W / 2 - 80, btnY + 85, 160, 40)) {
+        if (hit(gx, gy, W / 2 - 80, btnY + 90, 160, 40)) {
             playSound('tap');
             planStep = 0;
             assignments = [];
+            pickConfirm = -1;
         }
     }
 }
